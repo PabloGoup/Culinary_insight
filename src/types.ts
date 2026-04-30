@@ -529,7 +529,7 @@ export interface MenuEngineeringItem {
   revenue: number;
   contribution: number;
   popularityIndex: number;
-  quadrant: 'Estrella' | 'Caballo' | 'Puzzle' | 'Perro';
+  quadrant: 'Estrella' | 'Vaca' | 'Puzzle' | 'Perro';
   recommendedAction: string;
 }
 
