@@ -219,6 +219,24 @@ export function getDishOperationalCapacitySnapshot(state: AppState, dish: Dish) 
   };
 }
 
+export function getDishIndirectCostBreakdown(state: AppState, dish: Dish) {
+  return state.indirectCosts.map((cost) => {
+    const allocated = allocateDishIndirectCostLine(state, cost, dish.laborMinutes) * dish.indirectCostShare;
+    const bucket = isCommissionIndirectCost(cost)
+      ? 'commission'
+      : cost.allocationMethod === 'hours'
+        ? 'variable'
+        : 'fixed';
+
+    return {
+      cost,
+      monthlyAmount: getMonthlyCostAmount(cost),
+      allocatedCost: allocated,
+      bucket,
+    };
+  });
+}
+
 export function getEffectiveFoodCostTarget(state: AppState, dish: Dish) {
   const dishTarget = state.foodCostTargets.find((target) => target.scopeType === 'dish' && target.scopeId === dish.id);
   if (dishTarget) return dishTarget.targetPercent;
@@ -407,11 +425,14 @@ export function calculateDishCost(state: AppState, dish: Dish): DishCostResult {
   const totalCost = subtotalBeforeMargin;
   const targetFoodCost = Math.max(getEffectiveFoodCostTarget(state, dish), 0.01);
   const suggestedPriceByFoodCost = directCost / targetFoodCost;
-  const formulaPrice = subtotalBeforeMargin / Math.max(1 - dish.desiredMargin, 0.01);
+  const utilityTargetAmount = materialCost * Math.max(dish.desiredMargin, 0);
+  const formulaPrice = subtotalBeforeMargin + utilityTargetAmount;
   const suggestedPriceByMargin = formulaPrice;
   const recommendedPrice = Math.max(suggestedPriceByFoodCost, formulaPrice);
   const grossMarginPercent = recommendedPrice === 0 ? 0 : (recommendedPrice - directCost) / recommendedPrice;
   const netMarginPercent = recommendedPrice === 0 ? 0 : (recommendedPrice - subtotalBeforeMargin) / recommendedPrice;
+  const totalUtilityAmount = recommendedPrice - totalCost;
+  const totalUtilityOnCostPercent = totalCost === 0 ? 0 : totalUtilityAmount / totalCost;
   const foodCostPercent = recommendedPrice === 0 ? 0 : (materialCost + wasteCost + packagingCost) / recommendedPrice;
 
   return {
@@ -434,6 +455,9 @@ export function calculateDishCost(state: AppState, dish: Dish): DishCostResult {
     totalCost,
     subtotalBeforeMargin,
     formulaPrice,
+    utilityTargetAmount,
+    totalUtilityAmount,
+    totalUtilityOnCostPercent,
     suggestedPriceByFoodCost,
     suggestedPriceByMargin,
     recommendedPrice,

@@ -13,6 +13,7 @@ import type {
   Ingredient,
   InventoryMovement,
   LaborProfile,
+  Menu,
   PackagingCost,
   ProductionPlan,
   Projection,
@@ -623,6 +624,18 @@ export function useLocalStore() {
           productionPlans: current.productionPlans.some((item) => item.id === plan.id)
             ? current.productionPlans.map((item) => (item.id === plan.id ? plan : item))
             : [...current.productionPlans, plan],
+        })),
+      upsertMenu: (menu: Menu) =>
+        setState((current) => ({
+          ...current,
+          menus: current.menus.some((item) => item.id === menu.id)
+            ? current.menus.map((item) => (item.id === menu.id ? menu : item))
+            : [...current.menus, menu],
+        })),
+      removeMenu: (id: string) =>
+        setState((current) => ({
+          ...current,
+          menus: current.menus.filter((item) => item.id !== id),
         })),
       recordSale: (sale: Sale) =>
         setState((current) => ({

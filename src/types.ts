@@ -248,6 +248,7 @@ export interface Dish {
   technicalNotes: string;
   shelfLifeHours: number;
   salesCount: number;
+  customerFacingPrice?: number;
   imageUrl?: string;
 }
 
@@ -491,6 +492,9 @@ export interface DishCostResult {
   totalCost: number;
   subtotalBeforeMargin: number;
   formulaPrice: number;
+  utilityTargetAmount: number;
+  totalUtilityAmount: number;
+  totalUtilityOnCostPercent: number;
   suggestedPriceByFoodCost: number;
   suggestedPriceByMargin: number;
   recommendedPrice: number;
