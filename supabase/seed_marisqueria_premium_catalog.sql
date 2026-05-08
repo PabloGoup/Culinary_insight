@@ -510,7 +510,6 @@ begin
 
   insert into public.projection_days (id, business_id, projection_id, day_name, projected_customers, avg_food_ticket, avg_beverage_ticket)
   values
-    (pg_temp.seed_uuid(v_business_id, 'projection-day:lun'), v_business_id, pg_temp.seed_uuid(v_business_id, 'projection:invierno-premium'), 'Lunes', 22, 42800, 14800),
     (pg_temp.seed_uuid(v_business_id, 'projection-day:mar'), v_business_id, pg_temp.seed_uuid(v_business_id, 'projection:invierno-premium'), 'Martes', 24, 43200, 15000),
     (pg_temp.seed_uuid(v_business_id, 'projection-day:mie'), v_business_id, pg_temp.seed_uuid(v_business_id, 'projection:invierno-premium'), 'Miercoles', 28, 43800, 15200),
     (pg_temp.seed_uuid(v_business_id, 'projection-day:jue'), v_business_id, pg_temp.seed_uuid(v_business_id, 'projection:invierno-premium'), 'Jueves', 32, 44600, 15800),

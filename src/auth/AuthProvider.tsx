@@ -101,6 +101,16 @@ function getErrorMessage(error: AuthError | Error | null) {
   return error.message || 'No fue posible autenticar con Supabase.';
 }
 
+function sameProfile(a: UserProfile | null, b: UserProfile | null) {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return a.id === b.id &&
+    a.businessId === b.businessId &&
+    a.name === b.name &&
+    a.email === b.email &&
+    a.role === b.role;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [authLoading, setAuthLoading] = useState<boolean>(isSupabaseConfigured);
@@ -143,23 +153,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const {
       data: { subscription },
-    } = client.auth.onAuthStateChange((_event, session) => {
+    } = client.auth.onAuthStateChange((event, session) => {
       if (!session?.user) {
         setUser(null);
         setAuthLoading(false);
         return;
       }
 
-      setAuthLoading(true);
+      const shouldShowLoading = event === 'SIGNED_IN' || event === 'SIGNED_OUT' || event === 'USER_UPDATED';
+      if (shouldShowLoading) setAuthLoading(true);
       fetchProfile(session.user.id)
         .then((profile) => {
-          if (mounted) setUser(profile);
+          if (mounted) {
+            setUser((current) => (sameProfile(current, profile) ? current : profile));
+          }
         })
         .catch((error) => {
           if (mounted) setAuthError(getErrorMessage(error as Error));
         })
         .finally(() => {
-          if (mounted) setAuthLoading(false);
+          if (mounted && shouldShowLoading) setAuthLoading(false);
         });
     });
 

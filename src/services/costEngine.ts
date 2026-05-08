@@ -92,6 +92,14 @@ export function roundPriceForCustomer(price: number) {
   return Math.ceil(Math.max(price, 0) / 100) * 100;
 }
 
+function getNetAmountFromGross(grossAmount: number, taxRate: number) {
+  return grossAmount / Math.max(1 + Math.max(taxRate, 0), 1);
+}
+
+function getVatAmountFromGross(grossAmount: number, taxRate: number) {
+  return grossAmount - getNetAmountFromGross(grossAmount, taxRate);
+}
+
 export function getLatestProjection(projections: Projection[]) {
   return projections.length > 0 ? projections[projections.length - 1] : null;
 }
@@ -300,8 +308,8 @@ export function calculateDishCost(state: AppState, dish: Dish): DishCostResult {
   let packagingCost = 0;
   let directMaterialCost = 0;
   let wasteCost = 0;
-  const baseRecipeLaborCost = 0;
-  const baseRecipeIndirectCost = 0;
+  let baseRecipeLaborCost = 0;
+  let baseRecipeIndirectCost = 0;
 
   dish.directItems.forEach((component) => {
     if (component.componentType === 'ingredient') {
@@ -334,9 +342,13 @@ export function calculateDishCost(state: AppState, dish: Dish): DishCostResult {
       const normalized = convertQuantity(component.quantity, component.unit, recipe.itemCostUnit);
       const recipeFactor = normalized / Math.max(recipe.yieldAmount, 0.001);
       const scaledIngredientCost = result.ingredientCost * recipeFactor;
+      const scaledLaborCost = result.laborCost * recipeFactor;
+      const scaledIndirectCost = result.indirectCost * recipeFactor;
       const lineWasteCost = scaledIngredientCost * (component.wastePercent / 100);
-      const lineCost = scaledIngredientCost + lineWasteCost;
+      const lineCost = scaledIngredientCost + lineWasteCost + scaledLaborCost + scaledIndirectCost;
       baseRecipeCost += lineCost;
+      baseRecipeLaborCost += scaledLaborCost;
+      baseRecipeIndirectCost += scaledIndirectCost;
       directMaterialCost += scaledIngredientCost;
       wasteCost += lineWasteCost;
       componentLines.push({
@@ -347,7 +359,7 @@ export function calculateDishCost(state: AppState, dish: Dish): DishCostResult {
         quantity: component.quantity,
         unit: component.unit,
         wastePercent: component.wastePercent,
-        unitCost: (result.ingredientCost / Math.max(recipe.yieldAmount, 0.001)) * (1 + component.wastePercent / 100),
+        unitCost: lineCost / Math.max(component.quantity, 0.001),
         lineCost,
         nestedLines: result.lines.map((line) => ({
           ingredientId: line.ingredientId,
@@ -472,6 +484,17 @@ export function calculateProjectionRevenue(projection: Projection) {
     (sum, day) => sum + day.projectedCustomers * (day.avgFoodTicket + day.avgBeverageTicket),
     0,
   ) * (projection.period === 'mes' ? 4 : 1);
+}
+
+function getHistoricalTaxablePurchaseConsumption(state: AppState) {
+  return state.sales.reduce((sum, sale) => (
+    sum + sale.items.reduce((saleSum, item) => {
+      const dish = state.dishes.find((candidate) => candidate.id === item.dishId);
+      if (!dish) return saleSum;
+      const result = calculateDishCost(state, dish);
+      return saleSum + (result.materialCost + result.wasteCost + result.packagingCost) * item.quantity;
+    }, 0)
+  ), 0);
 }
 
 function getWasteValue(state: AppState) {
@@ -761,6 +784,7 @@ export function getDashboardAlerts(state: AppState): DashboardAlert[] {
 }
 
 export function getDashboardMetrics(state: AppState): DashboardMetrics {
+  const taxRate = Math.max(state.business.taxRate, 0);
   const salesRevenue = state.sales.reduce(
     (sum, sale) =>
       sum +
@@ -794,6 +818,17 @@ export function getDashboardMetrics(state: AppState): DashboardMetrics {
     calculateTotalMonthlyLaborCost(state);
   const projectedProfit = monthlyProjection * contributionMarginRatio - totalMonthlyStructure;
   const projectedNetMarginPercent = monthlyProjection === 0 ? 0 : projectedProfit / monthlyProjection;
+  const projectedNetSales = getNetAmountFromGross(monthlyProjection, taxRate);
+  const projectedVatDebit = getVatAmountFromGross(monthlyProjection, taxRate);
+  const historicalTaxablePurchaseConsumption = getHistoricalTaxablePurchaseConsumption(state);
+  const projectedTaxablePurchaseConsumption = salesRevenue === 0
+    ? 0
+    : monthlyProjection * (historicalTaxablePurchaseConsumption / salesRevenue);
+  const projectedTaxableStructureGross = state.business.fixedCostsMonthly + indirectMonthly;
+  const projectedVatCredit = getVatAmountFromGross(projectedTaxablePurchaseConsumption + projectedTaxableStructureGross, taxRate);
+  const projectedVatPayable = projectedVatDebit - projectedVatCredit;
+  const projectedRealProfitAfterVat = projectedProfit - projectedVatPayable;
+  const projectedRealNetMarginAfterVatPercent = monthlyProjection === 0 ? 0 : projectedRealProfitAfterVat / monthlyProjection;
 
   const ranked = state.dishes
     .map((dish) => ({
@@ -811,8 +846,14 @@ export function getDashboardMetrics(state: AppState): DashboardMetrics {
     netMarginPercent,
     estimatedProfit,
     monthlyProjection,
+    projectedNetSales,
+    projectedVatDebit,
+    projectedVatCredit,
+    projectedVatPayable,
     projectedNetMarginPercent,
     projectedProfit,
+    projectedRealProfitAfterVat,
+    projectedRealNetMarginAfterVatPercent,
     topDishes: ranked.slice(0, 3),
     lowDishes: ranked.slice(-3).reverse(),
     alerts: getDashboardAlerts(state),
@@ -913,7 +954,12 @@ export function getReportSnapshot(state: AppState): ReportSnapshot {
     projectedAverageFoodTicket,
     contributionMargin: averageContribution,
     contributionMarginRatio: contributionMargin,
-    projectedProfit: metrics.monthlyProjection - totalMonthlyStructure,
+    projectedProfit: metrics.projectedProfit,
+    projectedNetSales: metrics.projectedNetSales,
+    projectedVatDebit: metrics.projectedVatDebit,
+    projectedVatCredit: metrics.projectedVatCredit,
+    projectedVatPayable: metrics.projectedVatPayable,
+    projectedRealProfitAfterVat: metrics.projectedRealProfitAfterVat,
   };
 }
 

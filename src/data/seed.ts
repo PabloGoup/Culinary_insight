@@ -622,7 +622,6 @@ export const demoState: AppState = {
       name: 'Cierre mensual hotel',
       period: 'mes',
       days: [
-        { day: 'Lunes', projectedCustomers: 125, avgFoodTicket: 17400, avgBeverageTicket: 4200 },
         { day: 'Martes', projectedCustomers: 95, avgFoodTicket: 17400, avgBeverageTicket: 4200 },
         { day: 'Miercoles', projectedCustomers: 120, avgFoodTicket: 17400, avgBeverageTicket: 4200 },
         { day: 'Jueves', projectedCustomers: 140, avgFoodTicket: 18100, avgBeverageTicket: 4600 },

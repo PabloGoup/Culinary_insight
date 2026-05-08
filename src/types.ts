@@ -519,8 +519,14 @@ export interface DashboardMetrics {
   netMarginPercent: number;
   estimatedProfit: number;
   monthlyProjection: number;
+  projectedNetSales: number;
+  projectedVatDebit: number;
+  projectedVatCredit: number;
+  projectedVatPayable: number;
   projectedNetMarginPercent: number;
   projectedProfit: number;
+  projectedRealProfitAfterVat: number;
+  projectedRealNetMarginAfterVatPercent: number;
   topDishes: Array<{ dish: Dish; result: DishCostResult; unitsSold: number }>;
   lowDishes: Array<{ dish: Dish; result: DishCostResult; unitsSold: number }>;
   alerts: DashboardAlert[];
@@ -549,4 +555,9 @@ export interface ReportSnapshot {
   contributionMargin: number;
   contributionMarginRatio: number;
   projectedProfit: number;
+  projectedNetSales: number;
+  projectedVatDebit: number;
+  projectedVatCredit: number;
+  projectedVatPayable: number;
+  projectedRealProfitAfterVat: number;
 }

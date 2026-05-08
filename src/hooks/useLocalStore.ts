@@ -243,14 +243,15 @@ export function useLocalStore() {
   const [state, setState] = useState<AppState>(() => createRemoteFallbackState(user));
   const [isHydrating, setIsHydrating] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const businessId = user?.businessId;
 
   useEffect(() => {
     if (!usingSupabase) return;
     setState(createRemoteFallbackState(user));
-  }, [usingSupabase, user]);
+  }, [usingSupabase, businessId]);
 
   useEffect(() => {
-    if (!usingSupabase || !supabase || !user?.businessId) return;
+    if (!usingSupabase || !supabase || !businessId) return;
     const client = supabase;
 
     let cancelled = false;
@@ -262,7 +263,7 @@ export function useLocalStore() {
       const { data, error } = await client
         .from('app_snapshots')
         .select('state')
-        .eq('business_id', user.businessId)
+        .eq('business_id', businessId)
         .maybeSingle();
 
       if (cancelled) return;
@@ -274,10 +275,10 @@ export function useLocalStore() {
       }
 
       if (data?.state) {
-        setState(mergeState(data.state as Partial<AppState>, user.businessId));
+        setState(mergeState(data.state as Partial<AppState>, businessId));
       } else {
         const emptyState = createProductionAppState({
-          businessId: user.businessId,
+          businessId,
           businessName: 'Nuevo negocio gastronomico',
           user,
         });
@@ -292,10 +293,10 @@ export function useLocalStore() {
     return () => {
       cancelled = true;
     };
-  }, [usingSupabase, user]);
+  }, [usingSupabase, businessId]);
 
   useEffect(() => {
-    if (!usingSupabase || !supabase || !user?.businessId || isHydrating) return;
+    if (!usingSupabase || !supabase || !businessId || isHydrating) return;
     const client = supabase;
 
     const timeout = window.setTimeout(async () => {
@@ -303,12 +304,12 @@ export function useLocalStore() {
         ...state,
         business: {
           ...state.business,
-          id: user.businessId,
+          id: businessId,
         },
       };
 
       const { error } = await client.from('app_snapshots').upsert({
-        business_id: user.businessId,
+        business_id: businessId,
         state: remoteState,
       });
 
@@ -316,7 +317,7 @@ export function useLocalStore() {
     }, 500);
 
     return () => window.clearTimeout(timeout);
-  }, [state, usingSupabase, user, isHydrating]);
+  }, [state, usingSupabase, businessId, isHydrating]);
 
   const actions = useMemo(
     () => ({

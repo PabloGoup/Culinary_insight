@@ -40,12 +40,12 @@ export function DashboardModule({ state }: { state: StoreState }) {
   return (
     <section className="content-stack">
       <div className="kpi-grid">
-        <KpiCard title="Ventas reales" value={money.format(metrics.totalSales)} icon={TrendingUp} />
+        <KpiCard title="Ventas reales brutas" value={money.format(metrics.totalSales)} icon={TrendingUp} />
         <KpiCard title="Costos reales" value={money.format(metrics.totalCosts)} icon={Wallet} />
         <KpiCard title="Food cost real" value={percent.format(metrics.foodCostPercent)} icon={Percent} />
         <KpiCard title="Margen bruto real" value={percent.format(metrics.grossMarginPercent)} icon={BarChart3} />
-        <KpiCard title="Margen neto proyectado" value={percent.format(metrics.projectedNetMarginPercent)} icon={Target} />
-        <KpiCard title="Proyeccion mensual" value={money.format(metrics.monthlyProjection)} icon={ClipboardList} />
+        <KpiCard title="Utilidad real post IVA" value={money.format(metrics.projectedRealProfitAfterVat)} icon={Target} />
+        <KpiCard title="Proyeccion mensual bruta" value={money.format(metrics.monthlyProjection)} icon={ClipboardList} />
       </div>
 
       <div className="dashboard-grid">
@@ -193,6 +193,7 @@ export function ReportsModule({ state }: { state: StoreState }) {
   const metrics = useMemo(() => getDashboardMetrics(state), [state]);
   const latestProjection = useMemo(() => getLatestProjection(state.projections), [state.projections]);
   const projectedSales = metrics.monthlyProjection;
+  const projectedNetSales = report.projectedNetSales;
   const breakEvenCoverage = report.breakEvenSales > 0 ? projectedSales / report.breakEvenSales : 0;
   const contributionCoverage = projectedSales - report.breakEvenSales;
   const wasteRate = projectedSales > 0 ? report.wasteValue / projectedSales : 0;
@@ -238,7 +239,11 @@ export function ReportsModule({ state }: { state: StoreState }) {
     { label: 'Platos-equivalentes para equilibrio', value: report.breakEvenUnits > 0 ? `${report.breakEvenUnits} platos` : 'Sin base', helper: `Equivalen a platos vendidos con aporte medio de ${money.format(report.contributionMargin)} por unidad.` },
     { label: 'Tickets promedio para equilibrio', value: report.breakEvenGuestTickets > 0 ? `${report.breakEvenGuestTickets} tickets` : 'Sin base', helper: `Calculados con ticket promedio proyectado de ${money.format(report.projectedAverageFoodTicket)}.` },
     { label: 'Estructura mensual total', value: money.format(report.totalMonthlyStructure), helper: 'Incluye fijos base, indirectos mensualizados y costo total del personal.' },
-    { label: 'Utilidad proyectada', value: money.format(report.projectedProfit), helper: 'Indicador preliminar basado en proyeccion actual; revisar junto con cobertura del equilibrio.' },
+    { label: 'Utilidad proyectada antes IVA', value: money.format(report.projectedProfit), helper: 'Resultado operativo preliminar con ventas y costos brutos.' },
+    { label: 'IVA debito proyectado', value: money.format(report.projectedVatDebit), helper: 'IVA generado por las ventas proyectadas, asumiendo tickets con IVA incluido.' },
+    { label: 'IVA credito proyectado', value: money.format(report.projectedVatCredit), helper: 'IVA recuperable estimado desde compras e insumos afectos al periodo.' },
+    { label: 'IVA neto proyectado', value: money.format(report.projectedVatPayable), helper: 'Diferencia entre IVA debito de ventas e IVA credito de compras.' },
+    { label: 'Utilidad real despues de IVA', value: money.format(report.projectedRealProfitAfterVat), helper: 'Resultado final estimado del negocio despues de compensar IVA debito y credito.' },
   ];
   const eventRows = state.eventQuotes.map((eventQuote) => {
     const eventOperationalCost = eventQuote.laborCost + eventQuote.transportCost + eventQuote.setupCost + eventQuote.equipmentCost;
@@ -283,9 +288,9 @@ export function ReportsModule({ state }: { state: StoreState }) {
         <KpiCard title="Inventario valorizado" value={money.format(report.inventoryValue)} icon={Boxes} />
         <KpiCard title="Merma valorizada" value={money.format(report.wasteValue)} icon={TrendingDown} />
         <KpiCard title="Punto de equilibrio" value={money.format(report.breakEvenSales)} icon={Target} />
-        <KpiCard title="Venta proyectada" value={money.format(projectedSales)} icon={TrendingUp} />
-        <KpiCard title="Cobertura equilibrio" value={percent.format(breakEvenCoverage)} icon={Percent} />
-        <KpiCard title="Colchon proyectado" value={money.format(contributionCoverage)} icon={Wallet} />
+        <KpiCard title="Venta proyectada bruta" value={money.format(projectedSales)} icon={TrendingUp} />
+        <KpiCard title="IVA neto proyectado" value={money.format(report.projectedVatPayable)} icon={Percent} />
+        <KpiCard title="Utilidad real post IVA" value={money.format(report.projectedRealProfitAfterVat)} icon={Wallet} />
       </div>
 
       <div className="dashboard-grid reports-layout">
@@ -296,6 +301,9 @@ export function ReportsModule({ state }: { state: StoreState }) {
             <SummaryMetric label="Peso fijo sobre venta" value={percent.format(fixedCostWeight)} />
             <SummaryMetric label="Merma sobre venta" value={percent.format(wasteRate)} />
             <SummaryMetric label="Inventario vs venta proyectada" value={percent.format(projectedSales > 0 ? report.inventoryValue / projectedSales : 0)} />
+            <SummaryMetric label="Venta neta proyectada" value={money.format(projectedNetSales)} />
+            <SummaryMetric label="IVA debito proyectado" value={money.format(report.projectedVatDebit)} />
+            <SummaryMetric label="IVA credito proyectado" value={money.format(report.projectedVatCredit)} />
             <SummaryMetric label="Precio promedio plato" value={money.format(report.averageDishSellingPrice)} />
             <SummaryMetric label="Ticket promedio proyectado" value={money.format(report.projectedAverageFoodTicket)} />
           </div>
@@ -443,7 +451,9 @@ export function ReportsModule({ state }: { state: StoreState }) {
             <>
               <div className="summary-strip compact">
                 <SummaryMetric label="Proyeccion vigente" value={latestProjection?.name ?? '-'} />
-                <SummaryMetric label="Venta proyectada total" value={money.format(projectedSales)} />
+                <SummaryMetric label="Venta proyectada bruta" value={money.format(projectedSales)} />
+                <SummaryMetric label="Venta proyectada neta" value={money.format(projectedNetSales)} />
+                <SummaryMetric label="IVA debito" value={money.format(report.projectedVatDebit)} />
                 <SummaryMetric label="Clientes proyectados / mes" value={String(projectionRows.find((item) => item.isLatest)?.monthlyEquivalentGuests ?? 0)} />
                 <SummaryMetric label="Ticket promedio ponderado" value={money.format(report.projectedAverageFoodTicket)} />
               </div>
@@ -480,7 +490,7 @@ export function ReportsModule({ state }: { state: StoreState }) {
                 </table>
               </div>
               <p className="helper-text">
-                Los KPIs y reportes usan solo la ultima proyeccion guardada. Las anteriores quedan como historial para revision y limpieza.
+                Los tickets de proyeccion se leen con IVA incluido. El reporte separa venta neta, IVA debito, IVA credito estimado y utilidad real post IVA usando la ultima proyeccion guardada.
               </p>
             </>
           ) : (

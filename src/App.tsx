@@ -48,6 +48,7 @@ import {
   roundPriceForCustomer,
   getMonthlyCostAmount,
   getWarehouseAuditSummary,
+  getDashboardMetrics,
 } from './services/costEngine';
 import { isSupabaseConfigured } from './services/supabaseClient';
 import type {
@@ -103,6 +104,27 @@ type View =
 
 const units: Unit[] = ['kg', 'g', 'litro', 'ml', 'unidad', 'porcion'];
 const channels: SalesChannel[] = ['Salon', 'Delivery', 'Retiro', 'Hotel', 'Eventos', 'Banqueteria', 'Room service'];
+const dishAllergenCatalog = ['Pescado', 'Mariscos', 'Crustaceos', 'Moluscos', 'Lacteos', 'Gluten', 'Huevos', 'Sesamo', 'Mostaza', 'Sulfitos'];
+const dishGarnishCatalog = [
+  'Pure de coliflor',
+  'Papa chilota',
+  'Pepino laminado',
+  'Palta',
+  'Hinojo fresco',
+  'Brioche tostado',
+  'Brotes verdes',
+  'Ensalada de hierbas',
+];
+const dishDecorationCatalog = [
+  'Aceite de cilantro',
+  'Sal de Cahuil',
+  'Ralladura de limon',
+  'Cilantro fresco',
+  'Flores comestibles',
+  'Panko dorado',
+  'Parmesano',
+  'Gotas de leche de tigre',
+];
 
 const navItems: Array<{
   id: View;
@@ -218,6 +240,16 @@ function parseNumericInput(value: string, fallback = 0) {
   if (value.trim() === '') return fallback;
   const parsed = Number(value.replace(',', '.'));
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function buildOptionCatalog(defaultOptions: string[], dynamicOptions: string[]) {
+  return Array.from(
+    new Set(
+      [...defaultOptions, ...dynamicOptions]
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  ).sort((a, b) => a.localeCompare(b));
 }
 
 const laborRoleGroupLabels: Record<LaborRoleGroup, string> = {
@@ -688,7 +720,6 @@ function emptyProjection(): Projection {
     name: 'Nueva proyeccion',
     period: 'mes',
     days: [
-      { day: 'Lunes', projectedCustomers: 120, avgFoodTicket: 17500, avgBeverageTicket: 4200 },
       { day: 'Martes', projectedCustomers: 110, avgFoodTicket: 17500, avgBeverageTicket: 4200 },
       { day: 'Miercoles', projectedCustomers: 125, avgFoodTicket: 17500, avgBeverageTicket: 4200 },
       { day: 'Jueves', projectedCustomers: 140, avgFoodTicket: 18200, avgBeverageTicket: 4700 },
@@ -892,10 +923,13 @@ function getHelperCoverageTargets(date: string) {
   if (isoDay === 0) {
     return { morning: 2, afternoon: 0 };
   }
-  if (isoDay >= 1 && isoDay <= 4) {
+  if (isoDay === 1) {
+    return { morning: 0, afternoon: 0 };
+  }
+  if (isoDay >= 2 && isoDay <= 4) {
     return { morning: 2, afternoon: 2 };
   }
-  return { morning: 3, afternoon: 2 };
+  return { morning: 3, afternoon: 1 };
 }
 
 function getPlanningAlerts(state: ReturnType<typeof useLocalStore>['state'], monthKey: string) {
@@ -992,13 +1026,16 @@ function getPlanningAlerts(state: ReturnType<typeof useLocalStore>['state'], mon
       id: `helpers-capacity-${monthKey}`,
       tone: 'danger',
       title: 'Dotacion de ayudantes insuficiente para la cobertura semanal pedida',
-      detail: `Con ${helperProfile.headcount} ayudantes y maximo legal de 6 dias por semana solo caben ${helperProfile.headcount * 6} asignaciones semanales. La regla exige ${weeklyHelperDemand}: de lunes a jueves 2 AM / 2 PM, viernes y sabado 3 AM / 2 PM, y domingo solo 2 AM.`,
+      detail: `Con ${helperProfile.headcount} ayudantes y maximo legal de 6 dias por semana solo caben ${helperProfile.headcount * 6} asignaciones semanales. La regla exige ${weeklyHelperDemand}: de martes a jueves 2 AM / 2 PM, viernes y sabado 3 AM / 1 PM, y domingo solo 2 AM.`,
     });
   }
 
   listMonthDays(monthKey).forEach((date) => {
     const dayShifts = monthShifts.filter((shift) => shift.date === date);
     const helperTargets = getHelperCoverageTargets(date);
+    if (helperTargets.morning === 0 && helperTargets.afternoon === 0) {
+      return;
+    }
     const morningHelpers = dayShifts.filter((shift) => {
       const profile = laborProfileMap.get(shift.laborProfileId);
       return profile?.roleGroup === 'ayudante' && parseTimeToMinutes(shift.startTime) < 12 * 60;
@@ -1408,7 +1445,7 @@ function buildChileCompliantMonthlyShifts(
         if (!day.inMonth) return [];
 
         const isoDay = new Date(`${day.date}T12:00:00`).getDay();
-        if (isoDay === 0) return [];
+        if (isoDay === 0 || isoDay === 1) return [];
         if (!getRuleDrivenWorkdays(employee, isoDay, weekIndex, sameProfileTeam.length)) return [];
 
         const shiftWindow = getGeneratedShiftWindow(employee, template, isoDay);
@@ -3003,41 +3040,48 @@ function DishesModule({
   canManage: boolean;
 }) {
   const [draft, setDraft] = useState<Dish>(() => emptyDish(state));
+  const [expandedDishAnalysisId, setExpandedDishAnalysisId] = useState<string | null>(null);
   const [menuDraft, setMenuDraft] = useState<Menu>(() => emptyMenu(state));
   const [menuPreviewId, setMenuPreviewId] = useState('');
   const [menuPreviewPrices, setMenuPreviewPrices] = useState<Record<string, number>>({});
-  const [operationalBusinessDraft, setOperationalBusinessDraft] = useState(() => ({
-    fixedCostsMonthly: state.business.fixedCostsMonthly,
-    payrollBurdenPercent: state.business.payrollBurdenPercent,
-    personnelSharedExtrasMonthly: state.business.personnelSharedExtrasMonthly,
-  }));
-  const [operationalIndirectDraft, setOperationalIndirectDraft] = useState<IndirectCost>(emptyIndirectCost);
-  const [editingOperationalCostId, setEditingOperationalCostId] = useState<string | null>(null);
-  const [priceDraft, setPriceDraft] = useState(() => ({
-    ingredientId: '',
-    supplierId: '',
-    date: new Date().toISOString().slice(0, 10),
-    pricePurchase: 0,
-  }));
   const result = useMemo(() => calculateDishCost(state, draft), [state, draft]);
   const capacitySnapshot = useMemo(() => getDishOperationalCapacitySnapshot(state, draft), [state, draft]);
   const roundedCustomerPrice = roundPriceForCustomer(result.recommendedPrice);
   const currentCustomerPrice = draft.customerFacingPrice && draft.customerFacingPrice > 0
     ? draft.customerFacingPrice
     : roundedCustomerPrice;
+  const selectedDishUtilityAmount = currentCustomerPrice - result.totalCost;
+  const selectedDishMarginOnSalesPercent = currentCustomerPrice === 0 ? 0 : selectedDishUtilityAmount / currentCustomerPrice;
+  const selectedDishProfitabilityOnCostPercent = result.totalCost === 0 ? 0 : selectedDishUtilityAmount / result.totalCost;
   const laborPolicy = getLaborPolicy(state, draft.laborProfileId, draft.laborMinutes);
   const assemblyPolicy = getDishAssemblyPolicy(state, draft.laborMinutes);
   const monthlyLaborStructure = calculateTotalMonthlyLaborCost(state);
   const monthlyIndirectStructure = state.indirectCosts.reduce((sum, item) => sum + getMonthlyCostAmount(item), 0);
-  const operationalIndirectBreakdown = useMemo(
-    () => getDishIndirectCostBreakdown(state, draft),
-    [state, draft],
-  );
   const draftCategoryName = state.categories.find((item) => item.id === draft.categoryId)?.name ?? 'Sin categoria';
   const canSaveDish = canManage && Boolean(draft.name) && assemblyPolicy.tone !== 'danger';
   const dishCategories = useMemo(
     () => state.categories.filter((item) => item.type === 'dish'),
     [state.categories],
+  );
+  const assemblyMinuteOptions = useMemo(() => {
+    const upperBound = Math.max(
+      Math.ceil(state.business.maxLeadershipMinutes),
+      Math.ceil(draft.laborMinutes),
+      20,
+    );
+    return Array.from({ length: upperBound }, (_, index) => index + 1);
+  }, [draft.laborMinutes, state.business.maxLeadershipMinutes]);
+  const allergenOptions = useMemo(
+    () => buildOptionCatalog(dishAllergenCatalog, state.dishes.flatMap((item) => item.allergens)),
+    [state.dishes],
+  );
+  const garnishOptions = useMemo(
+    () => buildOptionCatalog(dishGarnishCatalog, state.dishes.flatMap((item) => item.garnishes)),
+    [state.dishes],
+  );
+  const decorationOptions = useMemo(
+    () => buildOptionCatalog(dishDecorationCatalog, state.dishes.flatMap((item) => item.decorations)),
+    [state.dishes],
   );
   const isEditingMenu = state.menus.some((menu) => menu.id === menuDraft.id);
   const menuSelections = useMemo(
@@ -3052,52 +3096,31 @@ function DishesModule({
   );
   const canSaveMenu = canManage && Boolean(menuDraft.name.trim()) && menuDraft.dishIds.length > 0;
   const selectedMenuPreview = state.menus.find((menu) => menu.id === menuPreviewId) ?? state.menus[0] ?? null;
-  const dishIngredients = useMemo(() => {
-    const ingredientMap = new Map<string, { id: string; name: string; purchasePrice: number; usefulUnitCost: number; useUnit: Unit; supplierId: string }>();
-    result.componentLines.forEach((line) => {
-      if (line.componentType === 'ingredient') {
-        const ingredient = state.ingredients.find((item) => item.id === line.refId);
-        if (!ingredient) return;
-        ingredientMap.set(ingredient.id, {
-          id: ingredient.id,
-          name: ingredient.name,
-          purchasePrice: ingredient.purchasePrice,
-          usefulUnitCost: ingredient.usefulUnitCost,
-          useUnit: ingredient.useUnit,
-          supplierId: ingredient.primarySupplierId,
-        });
-      }
-      line.nestedLines?.forEach((nestedLine) => {
-        const ingredient = state.ingredients.find((item) => item.id === nestedLine.ingredientId);
-        if (!ingredient) return;
-        ingredientMap.set(ingredient.id, {
-          id: ingredient.id,
-          name: ingredient.name,
-          purchasePrice: ingredient.purchasePrice,
-          usefulUnitCost: ingredient.usefulUnitCost,
-          useUnit: ingredient.useUnit,
-          supplierId: ingredient.primarySupplierId,
-        });
-      });
-    });
-    return Array.from(ingredientMap.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [result.componentLines, state.ingredients]);
-  const selectedPriceIngredient = dishIngredients.find((item) => item.id === priceDraft.ingredientId);
-  const selectedIngredientEntity = state.ingredients.find((item) => item.id === priceDraft.ingredientId);
-  const selectedPriceTrend = selectedIngredientEntity ? getIngredientPriceTrend(selectedIngredientEntity) : null;
+  const groupedDishes = useMemo(() => {
+    const categoryMap = new Map(
+      dishCategories.map((category) => [category.id, { category, dishes: [] as Dish[] }]),
+    );
+    const uncategorized: Dish[] = [];
 
-  useEffect(() => {
-    if (!dishIngredients.length) return;
-    setPriceDraft((current) => {
-      const ingredient = dishIngredients.find((item) => item.id === current.ingredientId) ?? dishIngredients[0];
-      return {
-        ingredientId: ingredient.id,
-        supplierId: ingredient.supplierId,
-        date: current.date,
-        pricePurchase: ingredient.id === current.ingredientId ? current.pricePurchase : ingredient.purchasePrice,
-      };
+    state.dishes.forEach((dish) => {
+      const bucket = categoryMap.get(dish.categoryId);
+      if (bucket) {
+        bucket.dishes.push(dish);
+        return;
+      }
+      uncategorized.push(dish);
     });
-  }, [dishIngredients]);
+
+    return {
+      categorized: dishCategories
+        .map((category) => ({
+          category,
+          dishes: (categoryMap.get(category.id)?.dishes ?? []).sort((a, b) => a.name.localeCompare(b.name)),
+        }))
+        .filter((entry) => entry.dishes.length > 0),
+      uncategorized: uncategorized.sort((a, b) => a.name.localeCompare(b.name)),
+    };
+  }, [dishCategories, state.dishes]);
 
   useEffect(() => {
     if (!state.menus.length) {
@@ -3126,68 +3149,6 @@ function DishesModule({
     setMenuPreviewPrices(nextPrices);
   }, [selectedMenuPreview, state.dishes, state]);
 
-  function getDishCustomerPrice(dish: Dish, dishResult: ReturnType<typeof calculateDishCost>) {
-    return dish.customerFacingPrice && dish.customerFacingPrice > 0
-      ? dish.customerFacingPrice
-      : roundPriceForCustomer(dishResult.recommendedPrice);
-  }
-
-  function getUtilityPercentOnTotalCost(price: number, totalCost: number) {
-    return totalCost === 0 ? 0 : (price - totalCost) / totalCost;
-  }
-
-  const menuPreviewRows = selectedMenuPreview
-    ? selectedMenuPreview.dishIds
-      .map((dishId) => state.dishes.find((dish) => dish.id === dishId))
-      .filter((dish): dish is Dish => Boolean(dish))
-      .map((dish) => {
-        const dishResult = calculateDishCost(state, dish);
-        const customerPrice = menuPreviewPrices[dish.id] ?? getDishCustomerPrice(dish, dishResult);
-        return {
-          dish,
-          result: dishResult,
-          customerPrice,
-          utilityAmount: customerPrice - dishResult.totalCost,
-          utilityPercentOnCost: getUtilityPercentOnTotalCost(customerPrice, dishResult.totalCost),
-        };
-      })
-    : [];
-
-  const menuPreviewSummary = menuPreviewRows.reduce((accumulator, row) => ({
-    totalPrice: accumulator.totalPrice + row.customerPrice,
-    totalCost: accumulator.totalCost + row.result.totalCost,
-    totalUtility: accumulator.totalUtility + row.utilityAmount,
-  }), {
-    totalPrice: 0,
-    totalCost: 0,
-    totalUtility: 0,
-  });
-
-  const menuPreviewUtilityPercent = menuPreviewSummary.totalCost === 0
-    ? 0
-    : menuPreviewSummary.totalUtility / menuPreviewSummary.totalCost;
-
-  function saveMenuPreviewPrices() {
-    menuPreviewRows.forEach(({ dish, customerPrice }) => {
-      actions.upsertDish({
-        ...dish,
-        customerFacingPrice: customerPrice > 0 ? customerPrice : undefined,
-      });
-    });
-  }
-
-  useEffect(() => {
-    setOperationalBusinessDraft({
-      fixedCostsMonthly: state.business.fixedCostsMonthly,
-      payrollBurdenPercent: state.business.payrollBurdenPercent,
-      personnelSharedExtrasMonthly: state.business.personnelSharedExtrasMonthly,
-    });
-  }, [
-    state.business.fixedCostsMonthly,
-    state.business.payrollBurdenPercent,
-    state.business.personnelSharedExtrasMonthly,
-  ]);
-
   useEffect(() => {
     setMenuDraft((current) => {
       const nextCategoryIds = dishCategories.map((category) => category.id);
@@ -3212,7 +3173,403 @@ function DishesModule({
     });
   }, [dishCategories, state.dishes]);
 
-  const updateMenuDishSelection = (categoryId: string, dishId: string) => {
+  function getDishCustomerPrice(dish: Dish, dishResult: ReturnType<typeof calculateDishCost>) {
+    return dish.customerFacingPrice && dish.customerFacingPrice > 0
+      ? dish.customerFacingPrice
+      : roundPriceForCustomer(dishResult.recommendedPrice);
+  }
+
+  function getUtilityAmount(price: number, totalCost: number) {
+    return price - totalCost;
+  }
+
+  function getMarginPercentOnSales(price: number, totalCost: number) {
+    return price === 0 ? 0 : getUtilityAmount(price, totalCost) / price;
+  }
+
+  function getProfitabilityPercentOnTotalCost(price: number, totalCost: number) {
+    return totalCost === 0 ? 0 : getUtilityAmount(price, totalCost) / totalCost;
+  }
+
+  function updateDraftCustomerPrice(value: string) {
+    if (value.trim() === '') {
+      setDraft((current) => ({ ...current, customerFacingPrice: undefined }));
+      return;
+    }
+    setDraft((current) => ({ ...current, customerFacingPrice: parseNumericInput(value, currentCustomerPrice) }));
+  }
+
+  function renderDishAnalysis(dish: Dish) {
+    const dishResult = calculateDishCost(state, dish);
+    const dishCapacitySnapshot = getDishOperationalCapacitySnapshot(state, dish);
+    const dishOperationalIndirectBreakdown = getDishIndirectCostBreakdown(state, dish);
+    const dishCustomerPrice = getDishCustomerPrice(dish, dishResult);
+    const dishUtilityAmount = getUtilityAmount(dishCustomerPrice, dishResult.totalCost);
+    const dishMarginOnSalesPercent = getMarginPercentOnSales(dishCustomerPrice, dishResult.totalCost);
+    const dishIngredientsForAnalysis = Array.from(new Map(
+      dishResult.componentLines.flatMap((line) => {
+        const directIngredient = line.componentType === 'ingredient'
+          ? [state.ingredients.find((item) => item.id === line.refId)]
+          : [];
+        const nestedIngredients = (line.nestedLines ?? []).map((nestedLine) =>
+          state.ingredients.find((item) => item.id === nestedLine.ingredientId),
+        );
+        return [...directIngredient, ...nestedIngredients].filter(Boolean).map((ingredient) => [
+          ingredient!.id,
+          ingredient!,
+        ]);
+      }),
+    ).values()).sort((a, b) => a.name.localeCompare(b.name));
+    const menusContainingDish = state.menus.filter((menu) => menu.dishIds.includes(dish.id));
+    const productBlockTotal =
+      dishResult.materialCost +
+      dishResult.wasteCost +
+      dishResult.baseRecipeLaborCost +
+      dishResult.baseRecipeIndirectCost +
+      dishResult.packagingCost;
+    const operationalBlockTotal =
+      dishResult.laborCost +
+      dishResult.variableCost +
+      dishResult.fixedAllocatedCost +
+      dishResult.commissionCost +
+      dishResult.safetyBufferCost;
+
+    return (
+      <div className="inline-analysis-stack">
+        <div className="alert-row info">
+          <ClipboardList size={18} />
+          <div>
+            <strong>Analisis tecnico oculto por defecto</strong>
+            <span>Expande solo los bloques que necesites revisar para este plato.</span>
+          </div>
+        </div>
+
+        <CollapsibleSection title="Resumen de costos y rentabilidad" subtitle="Lectura ejecutiva del plato.">
+          <div className="metric-table">
+            <div className="report-section-title">
+              <strong>1. Costos del producto</strong>
+              <span>Materia prima, mermas, recetas base y empaque.</span>
+            </div>
+            <div className="report-metric-row child">
+              <div>
+                <span>Materia prima real</span>
+                <small>Ingredientes directos y materiales contenidos en recetas base.</small>
+              </div>
+              <strong>{money.format(dishResult.materialCost)}</strong>
+            </div>
+            <div className="report-metric-row child">
+              <div>
+                <span>Merma</span>
+                <small>Merma valorizada del plato.</small>
+              </div>
+              <strong>{money.format(dishResult.wasteCost)}</strong>
+            </div>
+            <div className="report-metric-row child">
+              <div>
+                <span>MO recetas base</span>
+                <small>Trabajo absorbido por preparaciones previas.</small>
+              </div>
+              <strong>{money.format(dishResult.baseRecipeLaborCost)}</strong>
+            </div>
+            <div className="report-metric-row child">
+              <div>
+                <span>Indirectos recetas base</span>
+                <small>Indirectos asociados a las recetas que alimentan este plato.</small>
+              </div>
+              <strong>{money.format(dishResult.baseRecipeIndirectCost)}</strong>
+            </div>
+            <div className="report-metric-row child">
+              <div>
+                <span>Packaging</span>
+                <small>Empaque directo asociado al plato.</small>
+              </div>
+              <strong>{money.format(dishResult.packagingCost)}</strong>
+            </div>
+            <div className="report-metric-row subtotal">
+              <div>
+                <span>Subtotal costos del producto</span>
+                <small>Suma del bloque producto.</small>
+              </div>
+              <strong>{money.format(productBlockTotal)}</strong>
+            </div>
+
+            <div className="report-section-title">
+              <strong>2. Costos operativos</strong>
+              <span>Armado final, estructura, indirectos y resguardo técnico.</span>
+            </div>
+            <div className="report-metric-row child">
+              <div>
+                <span>MO armado final</span>
+                <small>{`${decimal.format(dish.laborMinutes)} min en servicio.`}</small>
+              </div>
+              <strong>{money.format(dishResult.laborCost)}</strong>
+            </div>
+            {dishCapacitySnapshot.fixedCostPerDish > 0 ? (
+              <div className="report-metric-row child">
+                <div>
+                  <span>Fijo base negocio / plato</span>
+                  <small>{`${money.format(state.business.fixedCostsMonthly)} repartidos en ${dishCapacitySnapshot.monthlyCapacityPlates} platos/mes.`}</small>
+                </div>
+                <strong>{money.format(dishCapacitySnapshot.fixedCostPerDish)}</strong>
+              </div>
+            ) : null}
+            <div className="report-metric-row child">
+              <div>
+                <span>Costos variables</span>
+                <small>Indirectos variables imputados por tiempo.</small>
+              </div>
+              <strong>{money.format(dishResult.variableCost)}</strong>
+            </div>
+            <div className="report-metric-row child">
+              <div>
+                <span>Fijos prorrateados</span>
+                <small>Indirectos fijos y estructura absorbida por el plato.</small>
+              </div>
+              <strong>{money.format(dishResult.fixedAllocatedCost)}</strong>
+            </div>
+            <div className="report-metric-row child">
+              <div>
+                <span>Comisiones</span>
+                <small>Costos indirectos clasificados como comision.</small>
+              </div>
+              <strong>{money.format(dishResult.commissionCost)}</strong>
+            </div>
+            <div className="report-metric-row child">
+              <div>
+                <span>Margen de seguridad</span>
+                <small>Buffer tecnico del 3%.</small>
+              </div>
+              <strong>{money.format(dishResult.safetyBufferCost)}</strong>
+            </div>
+            <div className="report-metric-row subtotal">
+              <div>
+                <span>Subtotal costos operativos</span>
+                <small>Suma del bloque operativo.</small>
+              </div>
+              <strong>{money.format(operationalBlockTotal)}</strong>
+            </div>
+
+            <div className="report-section-title">
+              <strong>3. Venta y margen real</strong>
+              <span>Cierre comercial del plato después de todos los costos.</span>
+            </div>
+            <div className="report-metric-row child">
+              <div>
+                <span>Costo total</span>
+                <small>Suma completa de todos los costos del plato.</small>
+              </div>
+              <strong>{money.format(dishResult.totalCost)}</strong>
+            </div>
+            <div className="report-metric-row child">
+              <div>
+                <span>Precio recomendado</span>
+                <small>Precio tecnico sugerido por el modelo.</small>
+              </div>
+              <strong>{money.format(dishResult.recommendedPrice)}</strong>
+            </div>
+            <div className="report-metric-row child">
+              <div>
+                <span>Precio final cliente</span>
+                <small>Precio comercial actualmente activo.</small>
+              </div>
+              <strong>{money.format(dishCustomerPrice)}</strong>
+            </div>
+            <div className="report-metric-row child">
+              <div>
+                <span>Margen real $</span>
+                <small>Precio final cliente menos todos los costos del plato.</small>
+              </div>
+              <strong>{money.format(dishUtilityAmount)}</strong>
+            </div>
+            <div className="report-metric-row subtotal">
+              <div>
+                <span>Margen real % sobre venta</span>
+                <small>Lectura porcentual del margen real sobre el precio cliente.</small>
+              </div>
+              <strong>{percent.format(dishMarginOnSalesPercent)}</strong>
+            </div>
+            <div className="report-metric-row child">
+              <div>
+                <span>Food cost %</span>
+                <small>Peso de materia prima, merma y packaging sobre la venta.</small>
+              </div>
+              <strong>{percent.format(dishResult.foodCostPercent)}</strong>
+            </div>
+          </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection title="Desglose del plato" subtitle="Ingredientes, recetas base y costos por linea.">
+          <div className="table-shell compact-shell">
+            <table>
+              <thead>
+                <tr>
+                  <th>Tipo</th>
+                  <th>Componente</th>
+                  <th>Cantidad</th>
+                  <th>Costo unitario</th>
+                  <th>Costo linea</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dishResult.componentLines.map((line) => (
+                  <Fragment key={line.componentId}>
+                    <tr>
+                      <td>{line.componentType === 'baseRecipe' ? 'Receta base' : line.componentType === 'ingredient' ? 'Ingrediente' : 'Packaging'}</td>
+                      <td>{line.componentName}</td>
+                      <td>{`${decimal.format(line.quantity)} ${line.unit}`}</td>
+                      <td>{money.format(line.unitCost)}</td>
+                      <td>{money.format(line.lineCost)}</td>
+                    </tr>
+                    {line.nestedLines?.map((nestedLine) => (
+                      <tr key={`${line.componentId}-${nestedLine.ingredientId}`} className="nested-cost-row">
+                        <td>Detalle receta</td>
+                        <td>{nestedLine.ingredientName}</td>
+                        <td>{`${decimal.format(nestedLine.quantity)} ${nestedLine.unit}`}</td>
+                        <td>{`${money.format(nestedLine.usefulUnitCost)} / ${nestedLine.unit}`}</td>
+                        <td>{money.format(nestedLine.lineCost)}</td>
+                      </tr>
+                    ))}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection title="Formula del precio" subtitle="Como se llega al precio tecnico del plato.">
+          <div className="table-shell compact-shell">
+            <table>
+              <thead>
+                <tr>
+                  <th>Componente</th>
+                  <th>Valor</th>
+                  <th>Base de calculo</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td>Materia prima real</td><td>{money.format(dishResult.materialCost)}</td><td>Ingredientes directos + insumos materiales contenidos en recetas base.</td></tr>
+                <tr><td>Merma</td><td>{money.format(dishResult.wasteCost)}</td><td>Merma porcentual de ingredientes directos y componentes de receta base.</td></tr>
+                <tr><td>Mano de obra armado final</td><td>{money.format(dishResult.laborCost)}</td><td>{`${decimal.format(dish.laborMinutes)} min de armado final con perfil ${state.laborProfiles.find((item) => item.id === dish.laborProfileId)?.roleName ?? 'sin perfil'}.`}</td></tr>
+                <tr><td>Costos variables</td><td>{money.format(dishResult.variableCost)}</td><td>Indirectos variables convertidos a costo por minuto de cocina util.</td></tr>
+                <tr><td>Costos fijos prorrateados</td><td>{money.format(dishResult.fixedAllocatedCost)}</td><td>{`${money.format(dishCapacitySnapshot.fixedStructureMonthlyCost)} / ${dishCapacitySnapshot.monthlyCapacityPlates} platos de capacidad mensual util.`}</td></tr>
+                <tr><td>Comisiones</td><td>{money.format(dishResult.commissionCost)}</td><td>Costos indirectos marcados como comision.</td></tr>
+                <tr><td>Packaging</td><td>{money.format(dishResult.packagingCost)}</td><td>Elementos de empaque asociados al plato.</td></tr>
+                <tr><td>Margen de seguridad</td><td>{money.format(dishResult.safetyBufferCost)}</td><td>Buffer tecnico del 3% sobre el subtotal operativo.</td></tr>
+                <tr><td>Subtotal operativo</td><td>{money.format(dishResult.subtotalBeforeMargin)}</td><td>Base completa de costos del plato.</td></tr>
+                <tr><td>Utilidad objetivo sobre MP</td><td>{money.format(dishResult.utilityTargetAmount)}</td><td>{`${money.format(dishResult.materialCost)} x ${percent.format(dish.desiredMargin)}.`}</td></tr>
+                <tr><td>Precio por formula</td><td>{money.format(dishResult.formulaPrice)}</td><td>Costo total + utilidad objetivo sobre materia prima.</td></tr>
+                <tr><td>Precio recomendado final</td><td>{money.format(dishResult.recommendedPrice)}</td><td>Mayor entre precio por formula y precio exigido por food cost objetivo.</td></tr>
+                <tr><td>Precio carta actual</td><td>{money.format(dishCustomerPrice)}</td><td>Precio comercial vigente del plato. Si no fue editado, usa el precio sugerido redondeado.</td></tr>
+                <tr><td>Margen real $</td><td>{money.format(dishUtilityAmount)}</td><td>Precio final cliente menos todos los costos del plato.</td></tr>
+                <tr><td>Margen real % sobre venta</td><td>{percent.format(dishMarginOnSalesPercent)}</td><td>Margen real expresado como porcentaje de la venta final.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection title="Palancas del costo operativo" subtitle="Fijos, indirectos y estructura de cocina.">
+          <div className="summary-strip compact">
+            <SummaryMetric label="Fijos base / mes" value={money.format(state.business.fixedCostsMonthly)} />
+            <SummaryMetric label="Indirectos / mes" value={money.format(monthlyIndirectStructure)} />
+            <SummaryMetric label="Planilla empresa / mes" value={money.format(monthlyLaborStructure)} />
+            <SummaryMetric label="Costo fijo / plato" value={money.format(dishCapacitySnapshot.fixedCostPerDish)} />
+            <SummaryMetric label="Variable en este plato" value={money.format(dishResult.variableCost)} />
+            <SummaryMetric label="Fijo en este plato" value={money.format(dishResult.fixedAllocatedCost)} />
+            <SummaryMetric label="Comision en este plato" value={money.format(dishResult.commissionCost)} />
+          </div>
+          <div className="table-shell compact-shell">
+            <table>
+              <thead>
+                <tr>
+                  <th>Indirecto</th>
+                  <th>Metodo</th>
+                  <th>Mensualizado</th>
+                  <th>Factor</th>
+                  <th>Impacto plato</th>
+                  <th>Bolsa</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dishOperationalIndirectBreakdown.map(({ cost, monthlyAmount, allocatedCost, bucket }) => (
+                  <tr key={cost.id}>
+                    <td>{cost.name}</td>
+                    <td>{cost.allocationMethod}</td>
+                    <td>{money.format(monthlyAmount)}</td>
+                    <td>{decimal.format(cost.allocationValue)}</td>
+                    <td>{money.format(allocatedCost)}</td>
+                    <td>{bucket === 'variable' ? 'Variable' : bucket === 'commission' ? 'Comision' : 'Fijo'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CollapsibleSection>
+
+        {dishIngredientsForAnalysis.length > 0 && (
+          <CollapsibleSection title="Precios de insumos usados" subtitle="Valores actuales que impactan este plato.">
+            <div className="table-shell compact-shell">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Ingrediente</th>
+                    <th>Precio compra</th>
+                    <th>Costo util</th>
+                    <th>Unidad uso</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dishIngredientsForAnalysis.map((ingredient) => (
+                    <tr key={ingredient.id}>
+                      <td>{ingredient.name}</td>
+                      <td>{money.format(ingredient.purchasePrice)}</td>
+                      <td>{money.format(ingredient.usefulUnitCost)}</td>
+                      <td>{ingredient.useUnit}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CollapsibleSection>
+        )}
+
+        {menusContainingDish.length > 0 && (
+          <CollapsibleSection title="Menus donde aparece" subtitle="Bloque comprimido para revisar solo cuando haga falta.">
+            <div className="table-shell compact-shell">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Menu</th>
+                    <th>Precio menu</th>
+                    <th>Platos</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {menusContainingDish.map((menu) => {
+                    const menuDishes = menu.dishIds
+                      .map((dishId) => state.dishes.find((item) => item.id === dishId))
+                      .filter((item): item is Dish => Boolean(item));
+                    const menuPrice = menuDishes.reduce((sum, menuDish) => {
+                      const menuDishResult = calculateDishCost(state, menuDish);
+                      return sum + getDishCustomerPrice(menuDish, menuDishResult);
+                    }, 0);
+                    return (
+                      <tr key={menu.id}>
+                        <td>{menu.name}</td>
+                        <td>{money.format(menuPrice)}</td>
+                        <td>{menuDishes.map((item) => item.name).join(', ')}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </CollapsibleSection>
+        )}
+      </div>
+    );
+  }
+
+  function updateMenuDishSelection(categoryId: string, dishId: string) {
     setMenuDraft((current) => {
       const remainingDishIds = current.dishIds.filter((currentDishId) => {
         const currentDish = state.dishes.find((dish) => dish.id === currentDishId);
@@ -3225,40 +3582,278 @@ function DishesModule({
         dishIds: dishId ? [...remainingDishIds, dishId] : remainingDishIds,
       };
     });
-  };
+  }
 
-  const loadMenuDraft = (menu: Menu) => {
+  function loadMenuDraft(menu: Menu) {
     setMenuDraft({
       ...menu,
       categoryIds: [...menu.categoryIds],
       dishIds: [...menu.dishIds],
     });
-  };
+  }
+
+  const menuPreviewRows = selectedMenuPreview
+    ? selectedMenuPreview.dishIds
+      .map((dishId) => state.dishes.find((dish) => dish.id === dishId))
+      .filter((dish): dish is Dish => Boolean(dish))
+      .map((dish) => {
+        const dishResult = calculateDishCost(state, dish);
+        const customerPrice = menuPreviewPrices[dish.id] ?? getDishCustomerPrice(dish, dishResult);
+        return {
+          dish,
+          result: dishResult,
+          customerPrice,
+          utilityAmount: getUtilityAmount(customerPrice, dishResult.totalCost),
+          marginPercentOnSales: getMarginPercentOnSales(customerPrice, dishResult.totalCost),
+          profitabilityPercentOnCost: getProfitabilityPercentOnTotalCost(customerPrice, dishResult.totalCost),
+        };
+      })
+    : [];
+
+  const menuPreviewSummary = menuPreviewRows.reduce((accumulator, row) => ({
+    totalPrice: accumulator.totalPrice + row.customerPrice,
+    totalCost: accumulator.totalCost + row.result.totalCost,
+    totalUtility: accumulator.totalUtility + row.utilityAmount,
+  }), {
+    totalPrice: 0,
+    totalCost: 0,
+    totalUtility: 0,
+  });
+
+  const menuPreviewProfitabilityPercent = menuPreviewSummary.totalCost === 0
+    ? 0
+    : menuPreviewSummary.totalUtility / menuPreviewSummary.totalCost;
+  const menuPreviewMarginPercent = menuPreviewSummary.totalPrice === 0
+    ? 0
+    : menuPreviewSummary.totalUtility / menuPreviewSummary.totalPrice;
+
+  function saveMenuPreviewPrices() {
+    menuPreviewRows.forEach(({ dish, customerPrice }) => {
+      actions.upsertDish({
+        ...dish,
+        customerFacingPrice: customerPrice > 0 ? customerPrice : undefined,
+      });
+    });
+  }
+
+  const menuTableRows = state.menus.map((menu) => {
+    const dishes = menu.dishIds
+      .map((dishId) => state.dishes.find((dish) => dish.id === dishId))
+      .filter((dish): dish is Dish => Boolean(dish));
+    const getDishName = (categoryId: string) =>
+      dishes.find((dish) => dish.categoryId === categoryId)?.name ?? '-';
+    const roundedMenuPrice = dishes.reduce((sum, dish) => {
+      const dishResult = calculateDishCost(state, dish);
+      return sum + getDishCustomerPrice(dish, dishResult);
+    }, 0);
+    return [
+      menu.name,
+      ...dishCategories.map((category) => getDishName(category.id)),
+      money.format(roundedMenuPrice),
+      <div className="row-actions" key={`${menu.id}-actions`}>
+        <button className="icon-button" onClick={() => loadMenuDraft(menu)} title="Editar menu"><ClipboardList size={15} /></button>
+        <button className="icon-button" disabled={!canManage} onClick={() => actions.removeMenu(menu.id)} title="Borrar menu"><Trash2 size={15} /></button>
+      </div>,
+    ];
+  });
 
   return (
     <section className="content-stack">
+      <div className="dashboard-grid">
+        <section className="panel">
+          <PanelHeader title="Platos finales" />
+          <div className="summary-strip compact">
+            <SummaryMetric label="Total platos" value={decimal.format(state.dishes.length)} />
+            <SummaryMetric label="Categorias activas" value={decimal.format(groupedDishes.categorized.length)} />
+            <SummaryMetric label="Sin categoria" value={decimal.format(groupedDishes.uncategorized.length)} />
+          </div>
+          {groupedDishes.categorized.map(({ category, dishes }) => (
+            <CollapsibleSection
+              key={category.id}
+              title={category.name}
+              subtitle={`${dishes.length} plato${dishes.length === 1 ? '' : 's'} en esta categoria.`}
+              defaultOpen={category.id === draft.categoryId}
+            >
+              <div className="compact-shell">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Plato</th>
+                      <th>Armado</th>
+                      <th>Politica</th>
+                      <th>Costo total</th>
+                      <th>Precio cliente</th>
+                      <th>Margen real %</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dishes.map((dish) => {
+                      const dishResult = calculateDishCost(state, dish);
+                      const dishPolicy = getDishAssemblyPolicy(state, dish.laborMinutes);
+                      const customerPrice = getDishCustomerPrice(dish, dishResult);
+                      const isExpanded = expandedDishAnalysisId === dish.id;
+                      return (
+                        <Fragment key={dish.id}>
+                          <tr className={isExpanded ? 'table-row-active' : undefined}>
+                            <td>
+                              <button className="table-link-button" onClick={() => setDraft(dish)}>{dish.name}</button>
+                            </td>
+                            <td>{`${decimal.format(dish.laborMinutes)} min`}</td>
+                            <td><StatusBadge text={dishPolicy.text} tone={dishPolicy.tone} /></td>
+                            <td>{money.format(dishResult.totalCost)}</td>
+                            <td>{money.format(customerPrice)}</td>
+                            <td>{percent.format(getMarginPercentOnSales(customerPrice, dishResult.totalCost))}</td>
+                            <td>
+                              <div className="row-actions">
+                                <button
+                                  className="secondary-button compact"
+                                  onClick={() => setExpandedDishAnalysisId((current) => current === dish.id ? null : dish.id)}
+                                  title="Ver analisis tecnico"
+                                >
+                                  {isExpanded ? 'Ocultar analisis' : 'Ver analisis'}
+                                </button>
+                                <button className="icon-button" onClick={() => setDraft(dish)} title="Editar plato"><ClipboardList size={15} /></button>
+                                <button className="icon-button" disabled={!canManage} onClick={() => actions.removeDish(dish.id)} title="Borrar plato"><Trash2 size={15} /></button>
+                              </div>
+                            </td>
+                          </tr>
+                          {isExpanded ? (
+                            <tr className="table-inline-analysis-row">
+                              <td colSpan={7}>
+                                {renderDishAnalysis(dish)}
+                              </td>
+                            </tr>
+                          ) : null}
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </CollapsibleSection>
+          ))}
+          {groupedDishes.uncategorized.length > 0 ? (
+            <CollapsibleSection
+              title="Sin categoria"
+              subtitle="Platos que conviene clasificar para ordenar mejor la carta."
+              defaultOpen={!draft.categoryId}
+            >
+              <div className="compact-shell">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Plato</th>
+                      <th>Armado</th>
+                      <th>Politica</th>
+                      <th>Costo total</th>
+                      <th>Precio cliente</th>
+                      <th>Margen real %</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {groupedDishes.uncategorized.map((dish) => {
+                      const dishResult = calculateDishCost(state, dish);
+                      const dishPolicy = getDishAssemblyPolicy(state, dish.laborMinutes);
+                      const customerPrice = getDishCustomerPrice(dish, dishResult);
+                      const isExpanded = expandedDishAnalysisId === dish.id;
+                      return (
+                        <Fragment key={dish.id}>
+                          <tr className={isExpanded ? 'table-row-active' : undefined}>
+                            <td>
+                              <button className="table-link-button" onClick={() => setDraft(dish)}>{dish.name}</button>
+                            </td>
+                            <td>{`${decimal.format(dish.laborMinutes)} min`}</td>
+                            <td><StatusBadge text={dishPolicy.text} tone={dishPolicy.tone} /></td>
+                            <td>{money.format(dishResult.totalCost)}</td>
+                            <td>{money.format(customerPrice)}</td>
+                            <td>{percent.format(getMarginPercentOnSales(customerPrice, dishResult.totalCost))}</td>
+                            <td>
+                              <div className="row-actions">
+                                <button
+                                  className="secondary-button compact"
+                                  onClick={() => setExpandedDishAnalysisId((current) => current === dish.id ? null : dish.id)}
+                                  title="Ver analisis tecnico"
+                                >
+                                  {isExpanded ? 'Ocultar analisis' : 'Ver analisis'}
+                                </button>
+                                <button className="icon-button" onClick={() => setDraft(dish)} title="Editar plato"><ClipboardList size={15} /></button>
+                                <button className="icon-button" disabled={!canManage} onClick={() => actions.removeDish(dish.id)} title="Borrar plato"><Trash2 size={15} /></button>
+                              </div>
+                            </td>
+                          </tr>
+                          {isExpanded ? (
+                            <tr className="table-inline-analysis-row">
+                              <td colSpan={7}>
+                                {renderDishAnalysis(dish)}
+                              </td>
+                            </tr>
+                          ) : null}
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </CollapsibleSection>
+          ) : null}
+        </section>
+        <section className="panel">
+          <PanelHeader
+            title="Plato seleccionado"
+            action={<button className="secondary-button" onClick={() => setDraft(emptyDish(state))}><Pencil size={18} /> Nuevo plato</button>}
+          />
+          <div className="summary-strip compact">
+            <SummaryMetric label="Plato" value={draft.name || 'Sin nombre'} />
+            <SummaryMetric label="Categoria" value={draftCategoryName} />
+            <SummaryMetric label="Precio carta" value={money.format(currentCustomerPrice)} />
+            <SummaryMetric label="Precio sugerido" value={money.format(roundedCustomerPrice)} />
+            <SummaryMetric label="Costo total" value={money.format(result.totalCost)} />
+            <SummaryMetric label="Margen real $" value={money.format(selectedDishUtilityAmount)} />
+            <SummaryMetric label="Margen real % venta" value={percent.format(selectedDishMarginOnSalesPercent)} />
+            <SummaryMetric label="Food cost real" value={percent.format(result.foodCostPercent)} />
+          </div>
+          <div className={`alert-row ${assemblyPolicy.tone === 'danger' ? 'critical' : assemblyPolicy.tone === 'warning' ? 'warning' : 'info'}`}>
+            <AlertTriangle size={18} />
+            <div>
+              <strong>{assemblyPolicy.text}</strong>
+              <span>{assemblyPolicy.detail}</span>
+            </div>
+          </div>
+          <div className={`alert-row ${laborPolicy.tone === 'danger' ? 'critical' : laborPolicy.tone === 'warning' ? 'warning' : 'info'}`}>
+            <AlertTriangle size={18} />
+            <div>
+              <strong>{laborPolicy.text}</strong>
+              <span>{laborPolicy.detail}</span>
+            </div>
+          </div>
+          <div className="alert-row info">
+            <ClipboardList size={18} />
+            <div>
+              <strong>Lectura comercial activa</strong>
+              <span>El precio de carta puede diferir del precio tecnico recomendado. La utilidad del plato se mide sobre costo operativo total.</span>
+            </div>
+          </div>
+        </section>
+      </div>
+
       <section className="panel">
-        <PanelHeader
-          title="Flujo obligatorio: plato final"
-          action={<button className="secondary-button" onClick={() => setDraft((current) => ({
-            ...current,
-            directItems: [...current.directItems, { id: createId('cmp'), componentType: 'ingredient', refId: state.ingredients[0]?.id ?? '', quantity: 0, unit: 'g', wastePercent: 0 }],
-          }))}>Agregar componente</button>}
-        />
+        <PanelHeader title="Ficha principal del plato" />
         <div className="form-section-stack">
           <section className="form-section">
-            <h3>Datos comerciales del plato</h3>
+            <h3>Datos comerciales</h3>
             <div className="form-grid four">
-              <label>Nombre<input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
+              <label>Nombre<input disabled={!canManage} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
               <label>
                 Categoria
-                <select value={draft.categoryId} onChange={(event) => setDraft({ ...draft, categoryId: event.target.value })}>
+                <select disabled={!canManage} value={draft.categoryId} onChange={(event) => setDraft({ ...draft, categoryId: event.target.value })}>
                   {state.categories.filter((item) => item.type === 'dish').map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
                 </select>
               </label>
               <label>
                 Servicio
-                <select value={draft.service} onChange={(event) => setDraft({ ...draft, service: event.target.value as Dish['service'] })}>
+                <select disabled={!canManage} value={draft.service} onChange={(event) => setDraft({ ...draft, service: event.target.value as Dish['service'] })}>
                   <option>Desayuno</option>
                   <option>Almuerzo</option>
                   <option>Cena</option>
@@ -3266,29 +3861,105 @@ function DishesModule({
                   <option>Evento</option>
                 </select>
               </label>
-              <label>Food cost objetivo %<input type="number" step="0.1" value={draft.targetFoodCost * 100} onChange={(event) => setDraft({ ...draft, targetFoodCost: parseNumericInput(event.target.value) / 100 })} /></label>
-              <label>Margen deseado %<input type="number" step="0.1" value={draft.desiredMargin * 100} onChange={(event) => setDraft({ ...draft, desiredMargin: parseNumericInput(event.target.value) / 100 })} /></label>
-              <label>Factor indirectos<input type="number" step="0.01" value={draft.indirectCostShare} onChange={(event) => setDraft({ ...draft, indirectCostShare: parseNumericInput(event.target.value, 1) })} /></label>
-              <label>Minutos armado final<input type="number" step="0.1" max={state.business.maxLeadershipMinutes} value={draft.laborMinutes} onChange={(event) => setDraft({ ...draft, laborMinutes: parseNumericInput(event.target.value) })} /></label>
+              <label>Food cost objetivo %<input disabled={!canManage} type="number" step="0.1" value={draft.targetFoodCost * 100} onChange={(event) => setDraft({ ...draft, targetFoodCost: parseNumericInput(event.target.value) / 100 })} /></label>
+              <label>Utilidad sobre MP %<input disabled={!canManage} type="number" step="0.1" value={draft.desiredMargin * 100} onChange={(event) => setDraft({ ...draft, desiredMargin: parseNumericInput(event.target.value) / 100 })} /></label>
+              <label>Factor indirectos<input disabled={!canManage} type="number" step="0.01" value={draft.indirectCostShare} onChange={(event) => setDraft({ ...draft, indirectCostShare: parseNumericInput(event.target.value, 1) })} /></label>
               <label>
-                Perfil laboral
-                <select value={draft.laborProfileId} onChange={(event) => setDraft({ ...draft, laborProfileId: event.target.value })}>
-                  {state.laborProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.roleName}</option>)}
-                </select>
+                Precio final cliente
+                <input
+                  disabled={!canManage}
+                  type="number"
+                  step="100"
+                  value={draft.customerFacingPrice ?? ''}
+                  placeholder={String(roundedCustomerPrice)}
+                  onChange={(event) => updateDraftCustomerPrice(event.target.value)}
+                />
               </label>
+              <label>
+                Precio sugerido hoy
+                <input value={money.format(roundedCustomerPrice)} disabled />
+              </label>
+              <label>
+                Margen real automatico
+                <input value={percent.format(selectedDishMarginOnSalesPercent)} disabled />
+              </label>
+            </div>
+            <div className="toolbar">
+              <button
+                className="secondary-button compact"
+                disabled={!canManage}
+                onClick={() => setDraft((current) => ({ ...current, customerFacingPrice: undefined }))}
+              >
+                Usar precio sugerido
+              </button>
             </div>
           </section>
 
           <section className="form-section">
-            <h3>Montaje y control de calidad</h3>
+            <h3>Montaje y servicio</h3>
             <div className="form-grid four">
-              <label>Alergenos<input value={draft.allergens.join(', ')} onChange={(event) => setDraft({ ...draft, allergens: event.target.value.split(',').map((item) => item.trim()).filter(Boolean) })} /></label>
-              <label>Guarniciones<input value={draft.garnishes.join(', ')} onChange={(event) => setDraft({ ...draft, garnishes: event.target.value.split(',').map((item) => item.trim()).filter(Boolean) })} /></label>
-              <label>Decoraciones<input value={draft.decorations.join(', ')} onChange={(event) => setDraft({ ...draft, decorations: event.target.value.split(',').map((item) => item.trim()).filter(Boolean) })} /></label>
-              <label>Checklist de calidad<input value={draft.qualityChecklist.join(', ')} onChange={(event) => setDraft({ ...draft, qualityChecklist: event.target.value.split(',').map((item) => item.trim()).filter(Boolean) })} /></label>
+              <label>
+                Minutos armado final
+                <select
+                  disabled={!canManage}
+                  value={String(Math.round(draft.laborMinutes))}
+                  onChange={(event) => setDraft({ ...draft, laborMinutes: Number(event.target.value) })}
+                >
+                  {assemblyMinuteOptions.map((minutes) => (
+                    <option key={minutes} value={minutes}>
+                      {minutes} min
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Perfil laboral
+                <select disabled={!canManage} value={draft.laborProfileId} onChange={(event) => setDraft({ ...draft, laborProfileId: event.target.value })}>
+                  {state.laborProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.roleName}</option>)}
+                </select>
+              </label>
+              <ArraySelectField
+                label="Alergenos"
+                options={allergenOptions}
+                values={draft.allergens}
+                disabled={!canManage}
+                onChange={(values) => setDraft({ ...draft, allergens: values })}
+              />
+              <ArraySelectField
+                label="Guarniciones"
+                options={garnishOptions}
+                values={draft.garnishes}
+                disabled={!canManage}
+                onChange={(values) => setDraft({ ...draft, garnishes: values })}
+              />
+              <ArraySelectField
+                label="Decoraciones"
+                options={decorationOptions}
+                values={draft.decorations}
+                disabled={!canManage}
+                onChange={(values) => setDraft({ ...draft, decorations: values })}
+              />
             </div>
           </section>
         </div>
+        <div className="toolbar">
+          <button className="primary-button" disabled={!canSaveDish} onClick={() => {
+            actions.upsertDish(draft);
+            setDraft(emptyDish(state));
+          }}>
+            <Save size={18} /> Guardar plato final
+          </button>
+        </div>
+      </section>
+
+      <section className="panel">
+        <PanelHeader
+          title="Composicion del plato"
+          action={<button className="secondary-button" onClick={() => setDraft((current) => ({
+            ...current,
+            directItems: [...current.directItems, { id: createId('cmp'), componentType: 'ingredient', refId: state.ingredients[0]?.id ?? '', quantity: 0, unit: 'g', wastePercent: 0 }],
+          }))} disabled={!canManage}>Agregar componente</button>}
+        />
         <div className="field-grid-header dish-lines">
           <span>Tipo</span>
           <span>Componente</span>
@@ -3300,7 +3971,7 @@ function DishesModule({
         <div className="line-editor">
           {draft.directItems.map((component) => (
             <div className="line-grid six" key={component.id}>
-              <select value={component.componentType} onChange={(event) => setDraft((current) => ({
+              <select disabled={!canManage} value={component.componentType} onChange={(event) => setDraft((current) => ({
                 ...current,
                 directItems: current.directItems.map((line) => line.id === component.id ? {
                   ...line,
@@ -3317,7 +3988,7 @@ function DishesModule({
                 <option value="baseRecipe">Receta base</option>
                 <option value="packaging">Packaging</option>
               </select>
-              <select value={component.refId} onChange={(event) => setDraft((current) => ({
+              <select disabled={!canManage} value={component.refId} onChange={(event) => setDraft((current) => ({
                 ...current,
                 directItems: current.directItems.map((line) => line.id === component.id ? { ...line, refId: event.target.value } : line),
               }))}>
@@ -3325,563 +3996,171 @@ function DishesModule({
                 {component.componentType === 'baseRecipe' && state.baseRecipes.map((recipe) => <option key={recipe.id} value={recipe.id}>{recipe.name}</option>)}
                 {component.componentType === 'packaging' && state.packagingCosts.map((packaging) => <option key={packaging.id} value={packaging.id}>{packaging.name}</option>)}
               </select>
-              <input type="number" step="0.001" value={component.quantity} onChange={(event) => setDraft((current) => ({
+              <input disabled={!canManage} type="number" step="0.001" value={component.quantity} onChange={(event) => setDraft((current) => ({
                 ...current,
                 directItems: current.directItems.map((line) => line.id === component.id ? { ...line, quantity: parseNumericInput(event.target.value) } : line),
               }))} />
-              <select value={component.unit} onChange={(event) => setDraft((current) => ({
+              <select disabled={!canManage} value={component.unit} onChange={(event) => setDraft((current) => ({
                 ...current,
                 directItems: current.directItems.map((line) => line.id === component.id ? { ...line, unit: event.target.value as Unit } : line),
               }))}>
                 {units.map((unit) => <option key={unit}>{unit}</option>)}
               </select>
-              <input type="number" step="0.1" value={component.wastePercent} onChange={(event) => setDraft((current) => ({
+              <input disabled={!canManage} type="number" step="0.1" value={component.wastePercent} onChange={(event) => setDraft((current) => ({
                 ...current,
                 directItems: current.directItems.map((line) => line.id === component.id ? { ...line, wastePercent: parseNumericInput(event.target.value) } : line),
               }))} />
-              <button className="icon-button" onClick={() => setDraft((current) => ({
+              <button className="icon-button" disabled={!canManage} onClick={() => setDraft((current) => ({
                 ...current,
                 directItems: current.directItems.filter((line) => line.id !== component.id),
               }))}><Trash2 size={16} /></button>
             </div>
           ))}
         </div>
+      </section>
 
-        <div className="summary-strip wide">
-          <SummaryMetric label="Categoria" value={draftCategoryName} />
-          <SummaryMetric label="Armado final" value={`${decimal.format(draft.laborMinutes)} min`} />
-          <SummaryMetric label="Capacidad mensual plato" value={`${capacitySnapshot.monthlyCapacityPlates} platos`} />
-          <SummaryMetric label="Costo fijo por plato" value={money.format(capacitySnapshot.fixedCostPerDish)} />
-          <SummaryMetric label="Materia prima real" value={money.format(result.materialCost)} />
-          <SummaryMetric label="Merma" value={money.format(result.wasteCost)} />
-          <SummaryMetric label="Recetas base total" value={money.format(result.baseRecipeCost)} />
-          <SummaryMetric label="MO recetas base" value={money.format(result.baseRecipeLaborCost)} />
-          <SummaryMetric label="Indirectos recetas base" value={money.format(result.baseRecipeIndirectCost)} />
-          <SummaryMetric label="Packaging" value={money.format(result.packagingCost)} />
-          <SummaryMetric label="MO armado final" value={money.format(result.laborCost)} />
-          <SummaryMetric label="Costos variables" value={money.format(result.variableCost)} />
-          <SummaryMetric label="Fijos prorrateados" value={money.format(result.fixedAllocatedCost)} />
-          <SummaryMetric label="Comisiones" value={money.format(result.commissionCost)} />
-          <SummaryMetric label="Margen seguridad" value={money.format(result.safetyBufferCost)} />
-          <SummaryMetric label="Subtotal formula" value={money.format(result.subtotalBeforeMargin)} />
-          <SummaryMetric label="Costo operativo total" value={money.format(result.totalCost)} />
-          <SummaryMetric label="Utilidad objetivo sobre MP" value={money.format(result.utilityTargetAmount)} />
-          <SummaryMetric label="Precio formula real" value={money.format(result.formulaPrice)} />
-          <SummaryMetric label="Precio sugerido food cost" value={money.format(result.suggestedPriceByFoodCost)} />
-          <SummaryMetric label="Precio sugerido utilidad" value={money.format(result.suggestedPriceByMargin)} />
-          <SummaryMetric label="Precio recomendado" value={money.format(result.recommendedPrice)} />
-          <SummaryMetric label="Precio carta actual" value={money.format(currentCustomerPrice)} />
-          <SummaryMetric label="Food cost %" value={percent.format(result.foodCostPercent)} />
-          <SummaryMetric label="Utilidad total" value={money.format(result.totalUtilityAmount)} />
-          <SummaryMetric label="Rentabilidad costo total" value={percent.format(result.totalUtilityOnCostPercent)} />
-          <SummaryMetric label="Margen neto" value={percent.format(result.netMarginPercent)} />
-        </div>
-        <div className="alert-row info">
-          <ClipboardList size={18} />
-          <div>
-            <strong>Formula activa del plato final</strong>
-            <span>Precio final = costo operativo total + utilidad objetivo sobre materia prima. La utilidad objetivo se calcula como porcentaje de la materia prima real, no sobre el resto de los costos.</span>
+      <section className="panel">
+        <PanelHeader title="Menus y presentacion comercial" />
+        <CollapsibleSection title="Armado de menus" subtitle="Relaciona platos finales y calcula el valor comercial del menu.">
+          <div className="form-grid two">
+              <label>
+                Nombre del menu
+                <input
+                  disabled={!canManage}
+                  value={menuDraft.name}
+                  onChange={(event) => setMenuDraft((current) => ({ ...current, name: event.target.value }))}
+                />
+            </label>
           </div>
-        </div>
-        <div className="alert-row info">
-          <Factory size={18} />
-          <div>
-            <strong>Capacidad usada para prorratear fijos</strong>
-            <span>{`${capacitySnapshot.monthlyCapacityPlates} platos/mes a ${decimal.format(capacitySnapshot.assemblyMinutes)} min por plato, sobre ${decimal.format(capacitySnapshot.practicalMinutes)} min utiles mensuales (${percent.format(capacitySnapshot.practicalFactor)} de la capacidad disponible).`}</span>
-          </div>
-        </div>
-        <div className={`alert-row ${assemblyPolicy.tone === 'danger' ? 'critical' : assemblyPolicy.tone === 'warning' ? 'warning' : 'info'}`}>
-          <AlertTriangle size={18} />
-          <div>
-            <strong>{assemblyPolicy.text}</strong>
-            <span>{assemblyPolicy.detail}</span>
-          </div>
-        </div>
-        <div className={`alert-row ${laborPolicy.tone === 'danger' ? 'critical' : laborPolicy.tone === 'warning' ? 'warning' : 'info'}`}>
-          <AlertTriangle size={18} />
-          <div>
-            <strong>{laborPolicy.text}</strong>
-            <span>{laborPolicy.detail}</span>
-          </div>
-        </div>
-        <section className="recipe-cost-breakdown">
-          <div className="recipe-breakdown-header">
-            <h3>Desglose del plato seleccionado</h3>
-          </div>
-          <div className="table-shell compact-shell">
-            <table>
-              <thead>
-                <tr>
-                  <th>Tipo</th>
-                  <th>Componente</th>
-                  <th>Cantidad</th>
-                  <th>Costo unitario</th>
-                  <th>Costo linea</th>
-                </tr>
-              </thead>
-              <tbody>
-                {result.componentLines.map((line) => (
-                  <>
-                    <tr key={line.componentId}>
-                      <td>{line.componentType === 'baseRecipe' ? 'Receta base' : line.componentType === 'ingredient' ? 'Ingrediente' : 'Packaging'}</td>
-                      <td>{line.componentName}</td>
-                      <td>{`${decimal.format(line.quantity)} ${line.unit}`}</td>
-                      <td>{money.format(line.unitCost)}</td>
-                      <td>{money.format(line.lineCost)}</td>
-                    </tr>
-                    {line.nestedLines?.map((nestedLine) => (
-                      <tr key={`${line.componentId}-${nestedLine.ingredientId}`} className="nested-cost-row">
-                        <td>Detalle receta</td>
-                        <td>{nestedLine.ingredientName}</td>
-                        <td>{`${decimal.format(nestedLine.quantity)} ${nestedLine.unit}`}</td>
-                        <td>{`${money.format(nestedLine.usefulUnitCost)} / ${nestedLine.unit}`}</td>
-                        <td>{money.format(nestedLine.lineCost)}</td>
-                      </tr>
-                    ))}
-                  </>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-        <section className="recipe-cost-breakdown">
-          <div className="recipe-breakdown-header">
-            <h3>Desglose de formula del precio real</h3>
-          </div>
-          <div className="table-shell compact-shell">
-            <table>
-              <thead>
-                <tr>
-                  <th>Componente</th>
-                  <th>Valor</th>
-                  <th>Base de calculo</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr><td>Materia prima real</td><td>{money.format(result.materialCost)}</td><td>Ingredientes directos + insumos materiales contenidos en recetas base.</td></tr>
-                <tr><td>Merma</td><td>{money.format(result.wasteCost)}</td><td>Merma porcentual de ingredientes directos y componentes de receta base.</td></tr>
-                <tr><td>Mano de obra armado final</td><td>{money.format(result.laborCost)}</td><td>{`${decimal.format(draft.laborMinutes)} min de armado final con perfil ${state.laborProfiles.find((item) => item.id === draft.laborProfileId)?.roleName ?? 'sin perfil'}.`}</td></tr>
-                <tr><td>Costos variables</td><td>{money.format(result.variableCost)}</td><td>Indirectos variables convertidos a costo por minuto de cocina util.</td></tr>
-                <tr><td>Costos fijos prorrateados</td><td>{money.format(result.fixedAllocatedCost)}</td><td>{`${money.format(capacitySnapshot.fixedStructureMonthlyCost)} / ${capacitySnapshot.monthlyCapacityPlates} platos de capacidad mensual util.`}</td></tr>
-                <tr><td>Comisiones</td><td>{money.format(result.commissionCost)}</td><td>Costos indirectos marcados como comision.</td></tr>
-                <tr><td>Packaging</td><td>{money.format(result.packagingCost)}</td><td>Elementos de empaque asociados al plato.</td></tr>
-                <tr><td>Margen de seguridad</td><td>{money.format(result.safetyBufferCost)}</td><td>Buffer tecnico del 3% sobre el subtotal operativo.</td></tr>
-                <tr><td>Subtotal operativo</td><td>{money.format(result.subtotalBeforeMargin)}</td><td>Base completa de costos del plato.</td></tr>
-                <tr><td>Utilidad objetivo sobre MP</td><td>{money.format(result.utilityTargetAmount)}</td><td>{`${money.format(result.materialCost)} x ${percent.format(draft.desiredMargin)}.`}</td></tr>
-                <tr><td>Precio por formula</td><td>{money.format(result.formulaPrice)}</td><td>Costo operativo total + utilidad objetivo sobre materia prima.</td></tr>
-                <tr><td>Precio recomendado final</td><td>{money.format(result.recommendedPrice)}</td><td>Mayor entre precio por formula y precio exigido por food cost objetivo.</td></tr>
-                <tr><td>Utilidad total generada</td><td>{money.format(result.totalUtilityAmount)}</td><td>Precio recomendado final menos costo operativo total.</td></tr>
-                <tr><td>Rentabilidad sobre costo total</td><td>{percent.format(result.totalUtilityOnCostPercent)}</td><td>Utilidad total generada dividida por el costo operativo total.</td></tr>
-                <tr><td>Precio carta actual</td><td>{money.format(currentCustomerPrice)}</td><td>Precio comercial vigente del plato. Si no fue editado, usa el precio sugerido redondeado.</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-        <section className="recipe-cost-breakdown">
-          <div className="recipe-breakdown-header">
-            <h3>Palancas del costo operativo</h3>
+          <div className="form-grid four">
+            {menuSelections.map(({ category, selectedDishId, options }) => (
+              <label key={category.id}>
+                {category.name}
+                <select
+                  disabled={!canManage}
+                  value={selectedDishId}
+                  onChange={(event) => updateMenuDishSelection(category.id, event.target.value)}
+                >
+                  <option value="">Sin asignar</option>
+                  {options.map((dish) => (
+                    <option key={dish.id} value={dish.id}>
+                      {dish.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ))}
           </div>
           <div className="summary-strip compact">
-            <SummaryMetric label="Fijos base / mes" value={money.format(state.business.fixedCostsMonthly)} />
-            <SummaryMetric label="Indirectos / mes" value={money.format(monthlyIndirectStructure)} />
-            <SummaryMetric label="Planilla empresa / mes" value={money.format(monthlyLaborStructure)} />
-            <SummaryMetric label="Costo fijo / plato" value={money.format(capacitySnapshot.fixedCostPerDish)} />
-            <SummaryMetric label="Variable en este plato" value={money.format(result.variableCost)} />
-            <SummaryMetric label="Fijo en este plato" value={money.format(result.fixedAllocatedCost)} />
-            <SummaryMetric label="Comision en este plato" value={money.format(result.commissionCost)} />
-          </div>
-          <div className="alert-row info">
-            <Factory size={18} />
-            <div>
-              <strong>Que contiene hoy el costo operativo</strong>
-              <span>Incluye mano de obra del armado final, indirectos por hora, fijos prorrateados por capacidad util de cocina, comisiones y un buffer tecnico del 3%. La linea "Recetas base total" ya vive dentro de materia prima real; no se suma aparte.</span>
-            </div>
-          </div>
-          <div className="form-grid three">
-            <label>
-              Fijos mensuales base
-              <input
-                type="number"
-                step="0.001"
-                value={operationalBusinessDraft.fixedCostsMonthly}
-                onChange={(event) => setOperationalBusinessDraft((current) => ({ ...current, fixedCostsMonthly: parseNumericInput(event.target.value) }))}
-              />
-            </label>
-            <label>
-              Cargas laborales %
-              <input
-                type="number"
-                step="0.1"
-                value={operationalBusinessDraft.payrollBurdenPercent * 100}
-                onChange={(event) => setOperationalBusinessDraft((current) => ({ ...current, payrollBurdenPercent: parseNumericInput(event.target.value) / 100 }))}
-              />
-            </label>
-            <label>
-              Extras compartidos / mes
-              <input
-                type="number"
-                step="0.001"
-                value={operationalBusinessDraft.personnelSharedExtrasMonthly}
-                onChange={(event) => setOperationalBusinessDraft((current) => ({ ...current, personnelSharedExtrasMonthly: parseNumericInput(event.target.value) }))}
-              />
-            </label>
+            <SummaryMetric label="Platos asignados" value={`${menuDraft.dishIds.length}`} />
+            <SummaryMetric
+              label="Precio menu"
+              value={money.format(
+                menuDraft.dishIds.reduce((sum, dishId) => {
+                  const dish = state.dishes.find((item) => item.id === dishId);
+                  if (!dish) return sum;
+                  const dishResult = calculateDishCost(state, dish);
+                  return sum + getDishCustomerPrice(dish, dishResult);
+                }, 0),
+              )}
+            />
           </div>
           <div className="toolbar">
+            <button className="secondary-button" disabled={!canManage} onClick={() => setMenuDraft(emptyMenu(state))}>
+              <Pencil size={18} /> Nuevo menu
+            </button>
             <button
               className="primary-button"
-              disabled={!canManage}
-              onClick={() => actions.updateBusiness({
-                ...state.business,
-                ...operationalBusinessDraft,
-              })}
+              disabled={!canSaveMenu}
+              onClick={() => {
+                actions.upsertMenu({
+                  ...menuDraft,
+                  categoryIds: dishCategories.map((category) => category.id),
+                });
+                setMenuDraft(emptyMenu(state));
+              }}
             >
-              <Save size={18} /> Guardar estructura operativa
+              <Save size={18} /> {isEditingMenu ? 'Actualizar menu' : 'Guardar menu'}
             </button>
           </div>
-          <div className="table-shell compact-shell">
-            <table>
-              <thead>
-                <tr>
-                  <th>Indirecto</th>
-                  <th>Metodo</th>
-                  <th>Mensualizado</th>
-                  <th>Factor</th>
-                  <th>Impacto plato</th>
-                  <th>Bolsa</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {operationalIndirectBreakdown.map(({ cost, monthlyAmount, allocatedCost, bucket }) => {
-                  const isEditing = editingOperationalCostId === cost.id;
-                  const effectiveCost = isEditing ? operationalIndirectDraft : cost;
-                  return (
-                    <tr key={cost.id}>
-                      <td>{isEditing ? <input value={operationalIndirectDraft.name} onChange={(event) => setOperationalIndirectDraft({ ...operationalIndirectDraft, name: event.target.value })} /> : cost.name}</td>
-                      <td>
-                        {isEditing ? (
-                          <select value={operationalIndirectDraft.allocationMethod} onChange={(event) => setOperationalIndirectDraft({ ...operationalIndirectDraft, allocationMethod: event.target.value as IndirectCost['allocationMethod'] })}>
-                            <option value="manual">Manual</option>
-                            <option value="hours">Horas</option>
-                            <option value="sales">Ventas</option>
-                            <option value="product">Producto</option>
-                            <option value="recipe">Receta</option>
-                            <option value="category">Categoria</option>
-                          </select>
-                        ) : cost.allocationMethod}
-                      </td>
-                      <td>{isEditing ? <input type="number" step="0.001" value={operationalIndirectDraft.amount} onChange={(event) => setOperationalIndirectDraft({ ...operationalIndirectDraft, amount: parseNumericInput(event.target.value) })} /> : money.format(monthlyAmount)}</td>
-                      <td>{isEditing ? <input type="number" step="0.01" value={operationalIndirectDraft.allocationValue} onChange={(event) => setOperationalIndirectDraft({ ...operationalIndirectDraft, allocationValue: parseNumericInput(event.target.value, 1) })} /> : decimal.format(cost.allocationValue)}</td>
-                      <td>{money.format(allocatedCost)}</td>
-                      <td>{bucket === 'variable' ? 'Variable' : bucket === 'commission' ? 'Comision' : 'Fijo'}</td>
-                      <td>
-                        <div className="row-actions">
-                          {isEditing ? (
-                            <>
-                              <button
-                                className="icon-button"
-                                title="Guardar gasto"
-                                onClick={() => {
-                                  actions.upsertIndirectCost(operationalIndirectDraft);
-                                  setEditingOperationalCostId(null);
-                                  setOperationalIndirectDraft(emptyIndirectCost());
-                                }}
-                              >
-                                <Save size={15} />
-                              </button>
-                              <button
-                                className="secondary-button compact"
-                                title="Cancelar"
-                                onClick={() => {
-                                  setEditingOperationalCostId(null);
-                                  setOperationalIndirectDraft(emptyIndirectCost());
-                                }}
-                              >
-                                Cancelar
-                              </button>
-                            </>
-                          ) : (
-                            <button
-                              className="icon-button"
-                              title="Editar indirecto"
-                              onClick={() => {
-                                setEditingOperationalCostId(cost.id);
-                                setOperationalIndirectDraft(cost);
-                              }}
-                            >
-                              <Pencil size={15} />
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </section>
-        {dishIngredients.length > 0 && (
-          <section className="form-section">
-            <h3>Precios de productos usados en este plato</h3>
-            <div className="form-grid four">
+          {state.menus.length > 0 && (
+            <DataTable
+              title="Menus guardados"
+              headers={['Menu', ...dishCategories.map((category) => category.name), 'Precio menu', '']}
+              rows={menuTableRows}
+            />
+          )}
+        </CollapsibleSection>
+
+        {state.menus.length > 0 && (
+          <CollapsibleSection title="Previsualizacion de menu para cliente" subtitle="Solo permite ajustar el precio final de venta.">
+            <div className="form-grid two">
               <label>
-                Ingrediente
-                <select
-                  value={priceDraft.ingredientId}
-                  onChange={(event) => {
-                    const ingredient = dishIngredients.find((item) => item.id === event.target.value);
-                    setPriceDraft((current) => ({
-                      ...current,
-                      ingredientId: event.target.value,
-                      supplierId: ingredient?.supplierId ?? current.supplierId,
-                      pricePurchase: ingredient?.purchasePrice ?? current.pricePurchase,
-                    }));
-                  }}
-                >
-                  {dishIngredients.map((ingredient) => <option key={ingredient.id} value={ingredient.id}>{ingredient.name}</option>)}
+                Menu a previsualizar
+                <select value={selectedMenuPreview?.id ?? ''} onChange={(event) => setMenuPreviewId(event.target.value)}>
+                  {state.menus.map((menu) => (
+                    <option key={menu.id} value={menu.id}>
+                      {menu.name}
+                    </option>
+                  ))}
                 </select>
-              </label>
-              <label>
-                Proveedor
-                <select
-                  value={priceDraft.supplierId}
-                  onChange={(event) => setPriceDraft((current) => ({ ...current, supplierId: event.target.value }))}
-                >
-                  {state.suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}
-                </select>
-              </label>
-              <label>
-                Fecha
-                <input type="date" value={priceDraft.date} onChange={(event) => setPriceDraft((current) => ({ ...current, date: event.target.value }))} />
-              </label>
-              <label>
-                Nuevo precio compra
-                <input
-                  type="number"
-                  step="0.001"
-                  value={priceDraft.pricePurchase}
-                  onChange={(event) => setPriceDraft((current) => ({ ...current, pricePurchase: parseNumericInput(event.target.value) }))}
-                />
               </label>
             </div>
             <div className="summary-strip compact">
-              <SummaryMetric label="Precio actual" value={money.format(selectedPriceIngredient?.purchasePrice ?? 0)} />
-              <SummaryMetric
-                label="Costo util actual"
-                value={
-                  selectedPriceIngredient
-                    ? `${money.format(selectedPriceIngredient.usefulUnitCost)} / ${selectedPriceIngredient.useUnit}`
-                    : money.format(0)
-                }
-              />
-              <SummaryMetric
-                label="Variacion"
-                value={
-                  selectedPriceTrend
-                    ? `${selectedPriceTrend.delta >= 0 ? '+' : ''}${money.format(selectedPriceTrend.delta)} (${percent.format(selectedPriceTrend.percentDelta)})`
-                    : 'Sin historico'
-                }
-              />
+              <SummaryMetric label="Platos del menu" value={String(menuPreviewRows.length)} />
+              <SummaryMetric label="Total menu cliente" value={money.format(menuPreviewSummary.totalPrice)} />
+              <SummaryMetric label="Utilidad total menu" value={money.format(menuPreviewSummary.totalUtility)} />
+              <SummaryMetric label="Margen real % venta" value={percent.format(menuPreviewMarginPercent)} />
+              <SummaryMetric label="Rentab. % costo total" value={percent.format(menuPreviewProfitabilityPercent)} />
+            </div>
+            <div className="alert-row info">
+              <ClipboardList size={18} />
+              <div>
+                <strong>Edicion comercial controlada</strong>
+                <span>El precio final cliente nace desde la politica sobre materia prima, pero la utilidad real siempre se calcula restando todos los costos del plato al precio final. El margen mostrado en tabla es sobre venta; la rentabilidad sobre costo total queda en el resumen.</span>
+              </div>
+            </div>
+            <div className="table-shell compact-shell">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Plato</th>
+                    <th>Precio final cliente</th>
+                    <th>Margen real %</th>
+                    <th>Utilidad $</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {menuPreviewRows.map((row) => (
+                    <tr key={row.dish.id}>
+                      <td>{row.dish.name}</td>
+                      <td>
+                        <input
+                          disabled={!canManage}
+                          type="number"
+                          step="100"
+                          value={row.customerPrice}
+                          onChange={(event) => setMenuPreviewPrices((current) => ({
+                            ...current,
+                            [row.dish.id]: parseNumericInput(event.target.value, row.customerPrice),
+                          }))}
+                        />
+                      </td>
+                      <td>{percent.format(row.marginPercentOnSales)}</td>
+                      <td>{money.format(row.utilityAmount)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
             <div className="toolbar">
-              <button
-                className="primary-button"
-                disabled={!canManage || !priceDraft.ingredientId || !priceDraft.supplierId}
-                onClick={() => actions.registerIngredientPrice(priceDraft)}
-              >
-                <Save size={18} /> Actualizar precio del insumo
+              <button className="primary-button" disabled={!canManage || menuPreviewRows.length === 0} onClick={saveMenuPreviewPrices}>
+                <Save size={18} /> Guardar precios finales del menu
               </button>
             </div>
-          </section>
+          </CollapsibleSection>
         )}
-        <button className="primary-button" disabled={!canSaveDish} onClick={() => {
-          actions.upsertDish(draft);
-          setDraft(emptyDish(state));
-        }}>
-          <Save size={18} /> Guardar plato final
-        </button>
       </section>
-
-      <DataTable
-        title="Platos por tiempo y costo"
-        headers={['Plato', 'Tiempo', 'Politica tiempo', 'Costo cocina', 'Costo operativo', 'Precio recomendado', 'Precio cliente', 'Food cost', 'Margen neto', '']}
-        rows={state.dishes.map((dish) => {
-          const dishResult = calculateDishCost(state, dish);
-          const dishPolicy = getDishAssemblyPolicy(state, dish.laborMinutes);
-          const roundedDishPrice = getDishCustomerPrice(dish, dishResult);
-          return [
-            <button className="table-link-button" key={`${dish.id}-name`} onClick={() => setDraft(dish)}>{dish.name}</button>,
-            `${decimal.format(dish.laborMinutes)} min`,
-            <StatusBadge key={`${dish.id}-policy`} text={dishPolicy.text} tone={dishPolicy.tone} />,
-            money.format(dishResult.directCost),
-            money.format(dishResult.totalCost),
-            money.format(dishResult.recommendedPrice),
-            money.format(roundedDishPrice),
-            percent.format(dishResult.foodCostPercent),
-            percent.format(dishResult.netMarginPercent),
-            <div className="row-actions" key={`${dish.id}-actions`}>
-              <button className="icon-button" onClick={() => setDraft(dish)} title="Ver desglose"><ClipboardList size={15} /></button>
-              <button className="icon-button" onClick={() => actions.removeDish(dish.id)}><Trash2 size={15} /></button>
-            </div>,
-          ];
-        })}
-      />
-      <section className="panel">
-        <PanelHeader title="Menus con platos finales" />
-        <div className="form-grid two">
-          <label>
-            Nombre del menu
-            <input
-              value={menuDraft.name}
-              onChange={(event) => setMenuDraft((current) => ({ ...current, name: event.target.value }))}
-            />
-          </label>
-        </div>
-        <div className="form-grid four">
-          {menuSelections.map(({ category, selectedDishId, options }) => (
-            <label key={category.id}>
-              {category.name}
-              <select
-                value={selectedDishId}
-                onChange={(event) => updateMenuDishSelection(category.id, event.target.value)}
-              >
-                <option value="">Sin asignar</option>
-                {options.map((dish) => (
-                  <option key={dish.id} value={dish.id}>
-                    {dish.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ))}
-        </div>
-        <div className="summary-strip compact">
-          <SummaryMetric label="Platos asignados" value={`${menuDraft.dishIds.length}`} />
-          <SummaryMetric
-            label="Precio menu"
-            value={money.format(
-              menuDraft.dishIds.reduce((sum, dishId) => {
-                const dish = state.dishes.find((item) => item.id === dishId);
-                if (!dish) return sum;
-                const dishResult = calculateDishCost(state, dish);
-                return sum + getDishCustomerPrice(dish, dishResult);
-              }, 0),
-            )}
-          />
-        </div>
-        <div className="toolbar">
-          <button className="secondary-button" onClick={() => setMenuDraft(emptyMenu(state))}>
-            <Pencil size={18} /> Nuevo menu
-          </button>
-          <button
-            className="primary-button"
-            disabled={!canSaveMenu}
-            onClick={() => {
-              actions.upsertMenu({
-                ...menuDraft,
-                categoryIds: dishCategories.map((category) => category.id),
-              });
-              setMenuDraft(emptyMenu(state));
-            }}
-          >
-            <Save size={18} /> {isEditingMenu ? 'Actualizar menu' : 'Guardar menu'}
-          </button>
-        </div>
-      </section>
-      {state.menus.length > 0 && (
-        <DataTable
-          title="Menus separados por tiempo"
-          headers={['Menu', ...dishCategories.map((category) => category.name), 'Precio menu', '']}
-          rows={state.menus.map((menu) => {
-            const dishes = menu.dishIds
-              .map((dishId) => state.dishes.find((dish) => dish.id === dishId))
-              .filter((dish): dish is Dish => Boolean(dish));
-            const getDishName = (categoryId: string) =>
-              dishes.find((dish) => dish.categoryId === categoryId)?.name ?? '-';
-            const roundedMenuPrice = dishes.reduce((sum, dish) => {
-              const dishResult = calculateDishCost(state, dish);
-              return sum + getDishCustomerPrice(dish, dishResult);
-            }, 0);
-            return [
-              menu.name,
-              ...dishCategories.map((category) => getDishName(category.id)),
-              money.format(roundedMenuPrice),
-              <div className="row-actions" key={`${menu.id}-actions`}>
-                <button className="icon-button" onClick={() => loadMenuDraft(menu)} title="Editar menu"><ClipboardList size={15} /></button>
-                <button className="icon-button" onClick={() => actions.removeMenu(menu.id)} title="Borrar menu"><Trash2 size={15} /></button>
-              </div>,
-            ];
-          })}
-        />
-      )}
-      {state.menus.length > 0 && (
-        <section className="panel">
-          <PanelHeader title="Previsualizacion de menu para cliente" />
-          <div className="form-grid two">
-            <label>
-              Menu a previsualizar
-              <select value={selectedMenuPreview?.id ?? ''} onChange={(event) => setMenuPreviewId(event.target.value)}>
-                {state.menus.map((menu) => (
-                  <option key={menu.id} value={menu.id}>
-                    {menu.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <div className="summary-strip compact">
-            <SummaryMetric label="Platos del menu" value={String(menuPreviewRows.length)} />
-            <SummaryMetric label="Total menu cliente" value={money.format(menuPreviewSummary.totalPrice)} />
-            <SummaryMetric label="Utilidad total menu" value={money.format(menuPreviewSummary.totalUtility)} />
-            <SummaryMetric label="Utilidad % costo total" value={percent.format(menuPreviewUtilityPercent)} />
-          </div>
-          <div className="alert-row info">
-            <ClipboardList size={18} />
-            <div>
-              <strong>Edicion comercial controlada</strong>
-              <span>En esta vista solo se modifica el precio final para cliente. El porcentaje mostrado al lado corresponde a la utilidad sobre el costo total del plato.</span>
-            </div>
-          </div>
-          <div className="table-shell compact-shell">
-            <table>
-              <thead>
-                <tr>
-                  <th>Plato</th>
-                  <th>Precio final cliente</th>
-                  <th>Utilidad %</th>
-                  <th>Utilidad $</th>
-                </tr>
-              </thead>
-              <tbody>
-                {menuPreviewRows.map((row) => (
-                  <tr key={row.dish.id}>
-                    <td>{row.dish.name}</td>
-                    <td>
-                      <input
-                        type="number"
-                        step="100"
-                        value={row.customerPrice}
-                        onChange={(event) => setMenuPreviewPrices((current) => ({
-                          ...current,
-                          [row.dish.id]: parseNumericInput(event.target.value, row.customerPrice),
-                        }))}
-                      />
-                    </td>
-                    <td>{percent.format(row.utilityPercentOnCost)}</td>
-                    <td>{money.format(row.utilityAmount)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="toolbar">
-            <button className="primary-button" disabled={!canManage || menuPreviewRows.length === 0} onClick={saveMenuPreviewPrices}>
-              <Save size={18} /> Guardar precios finales del menu
-            </button>
-          </div>
-        </section>
-      )}
     </section>
   );
 }
@@ -4574,6 +4853,7 @@ function SalesModule({
   const [saleDraft, setSaleDraft] = useState<Sale>(() => emptySale(state));
   const [projectionDraft, setProjectionDraft] = useState<Projection>(emptyProjection);
   const latestProjection = useMemo(() => getLatestProjection(state.projections), [state.projections]);
+  const dashboardMetrics = useMemo(() => getDashboardMetrics(state), [state]);
   const projectionRows = useMemo(
     () => [...state.projections].reverse().map((projection, index) => ({
       ...projection,
@@ -4668,7 +4948,10 @@ function SalesModule({
           {latestProjection && (
             <div className="summary-strip">
               <SummaryMetric label="Proyeccion vigente" value={latestProjection.name} />
-              <SummaryMetric label="Venta mensual usada en reportes" value={money.format(calculateProjectionRevenue(latestProjection))} />
+              <SummaryMetric label="Venta mensual bruta usada en reportes" value={money.format(calculateProjectionRevenue(latestProjection))} />
+              <SummaryMetric label="IVA debito proyectado" value={money.format(dashboardMetrics.projectedVatDebit)} />
+              <SummaryMetric label="IVA credito proyectado" value={money.format(dashboardMetrics.projectedVatCredit)} />
+              <SummaryMetric label="Utilidad real post IVA" value={money.format(dashboardMetrics.projectedRealProfitAfterVat)} />
             </div>
           )}
           <div className="form-grid two sales-meta-grid">
@@ -4709,9 +4992,11 @@ function SalesModule({
               ))}
             </div>
           </div>
-          <p className="helper-text">Clientes proyectados por dia y ticket promedio separado entre comida y bebidas.</p>
+          <p className="helper-text">Clientes proyectados por dia y ticket promedio separado entre comida y bebidas. Los tickets se interpretan con IVA incluido, segun la tasa configurada del negocio.</p>
           <div className="summary-strip">
-            <SummaryMetric label="Venta proyectada" value={money.format(calculateProjectionRevenue(projectionDraft))} />
+            <SummaryMetric label="Venta proyectada bruta" value={money.format(calculateProjectionRevenue(projectionDraft))} />
+            <SummaryMetric label="Venta proyectada neta" value={money.format(calculateProjectionRevenue(projectionDraft) / (1 + Math.max(state.business.taxRate, 0)))} />
+            <SummaryMetric label="IVA debito proyectado" value={money.format(calculateProjectionRevenue(projectionDraft) - (calculateProjectionRevenue(projectionDraft) / (1 + Math.max(state.business.taxRate, 0))))} />
           </div>
           <div className="toolbar">
             <button className="secondary-button" onClick={() => setProjectionDraft(emptyProjection())}>
@@ -5182,7 +5467,7 @@ function PlanningModule({
           </button>
         </div>
         <p className="helper-text">
-          Regimen base usado para generar y validar: 44 h semanales hasta el 25 de abril de 2026; 42 h desde el 26 de abril de 2026; maximo diario ordinario 10 h; horas extra hasta 2 h por dia; colacion minima de 30 min; hasta 6 dias de trabajo por semana; al menos 2 domingos libres al mes. El boton reemplaza los turnos del mes seleccionado por una pauta base con rotacion dominical y cobertura reducida de domingo bajo regimen general chileno.
+          Regimen base usado para generar y validar: operacion de martes a domingo con lunes de descanso; 44 h semanales hasta el 25 de abril de 2026; 42 h desde el 26 de abril de 2026; maximo diario ordinario 10 h; horas extra hasta 2 h por dia; colacion minima de 30 min; hasta 6 dias de trabajo por semana; al menos 2 domingos libres al mes. El boton reemplaza los turnos del mes seleccionado por una pauta base con rotacion dominical y cobertura reducida de domingo bajo regimen general chileno.
         </p>
       </section>
 
@@ -6032,6 +6317,30 @@ function PanelHeader({ title, action }: { title: string; action?: ReactNode }) {
   );
 }
 
+function CollapsibleSection({
+  title,
+  subtitle,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <details className="collapsible-panel" open={defaultOpen}>
+      <summary className="collapsible-trigger">
+        <div className="collapsible-copy">
+          <strong>{title}</strong>
+          {subtitle ? <span>{subtitle}</span> : null}
+        </div>
+      </summary>
+      <div className="collapsible-body">{children}</div>
+    </details>
+  );
+}
+
 function SummaryMetric({ label, value }: { label: string; value: string }) {
   return (
     <div className="summary-metric">
@@ -6043,6 +6352,85 @@ function SummaryMetric({ label, value }: { label: string; value: string }) {
 
 function StatusBadge({ text, tone }: { text: string; tone: 'ok' | 'warning' | 'danger' }) {
   return <span className={`status-badge ${tone}`}>{text}</span>;
+}
+
+function ArraySelectField({
+  label,
+  options,
+  values,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  options: string[];
+  values: string[];
+  disabled?: boolean;
+  onChange: (values: string[]) => void;
+}) {
+  const availableOptions = options.filter((option) => !values.includes(option));
+  const [selectedOption, setSelectedOption] = useState(availableOptions[0] ?? '');
+
+  useEffect(() => {
+    if (!availableOptions.length) {
+      if (selectedOption !== '') setSelectedOption('');
+      return;
+    }
+    if (!availableOptions.includes(selectedOption)) {
+      setSelectedOption(availableOptions[0]);
+    }
+  }, [availableOptions, selectedOption]);
+
+  return (
+    <div className="array-select-field">
+      <span>{label}</span>
+      <div className="array-select-controls">
+        <select
+          disabled={disabled || availableOptions.length === 0}
+          value={selectedOption}
+          onChange={(event) => setSelectedOption(event.target.value)}
+        >
+          {availableOptions.length === 0 ? (
+            <option value="">Sin opciones disponibles</option>
+          ) : (
+            availableOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))
+          )}
+        </select>
+        <button
+          type="button"
+          className="secondary-button compact"
+          disabled={disabled || !selectedOption}
+          onClick={() => {
+            if (!selectedOption) return;
+            onChange([...values, selectedOption]);
+          }}
+        >
+          Agregar
+        </button>
+      </div>
+      <div className="array-select-values">
+        {values.length === 0 ? (
+          <span className="array-select-empty">Sin seleccion</span>
+        ) : (
+          values.map((value) => (
+            <button
+              type="button"
+              key={value}
+              className="array-select-chip"
+              disabled={disabled}
+              onClick={() => onChange(values.filter((item) => item !== value))}
+            >
+              <span>{value}</span>
+              <strong>×</strong>
+            </button>
+          ))
+        )}
+      </div>
+    </div>
+  );
 }
 
 function ColorChip({ text, colorHex }: { text: string; colorHex: string }) {
