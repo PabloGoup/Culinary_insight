@@ -248,6 +248,7 @@ export function getDishIndirectCostBreakdown(state: AppState, dish: Dish) {
 export function getEffectiveFoodCostTarget(state: AppState, dish: Dish) {
   const dishTarget = state.foodCostTargets.find((target) => target.scopeType === 'dish' && target.scopeId === dish.id);
   if (dishTarget) return dishTarget.targetPercent;
+  if (dish.targetFoodCost > 0) return dish.targetFoodCost;
   const categoryTarget = state.foodCostTargets.find(
     (target) => target.scopeType === 'category' && target.scopeId === dish.categoryId,
   );

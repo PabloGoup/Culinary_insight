@@ -1106,6 +1106,193 @@ button:focus-visible {
   font-size: 13px;
 }
 
+.comparison-selector-toolbar {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.comparison-selector-row {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 44px;
+}
+
+.comparison-shell {
+  overflow: auto;
+}
+
+.comparison-table {
+  min-width: 860px;
+  table-layout: fixed;
+}
+
+.comparison-table th,
+.comparison-table td {
+  padding: 12px;
+  vertical-align: top;
+}
+
+.comparison-table thead th {
+  background: #f7f7f7;
+  text-align: left;
+}
+
+.comparison-column-head {
+  display: grid;
+  gap: 4px;
+}
+
+.comparison-column-head span {
+  color: var(--udla-muted);
+  font-size: 12px;
+}
+
+.comparison-section-row td {
+  background: #fcf4ec;
+  color: var(--udla-orange-deep);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.comparison-label-cell {
+  color: var(--udla-muted);
+  font-weight: 700;
+  width: 240px;
+}
+
+.comparison-value-cell {
+  font-variant-numeric: tabular-nums;
+}
+
+.comparison-delta.positive {
+  color: #2f6f3e;
+  font-weight: 800;
+}
+
+.comparison-delta.negative {
+  color: #b42318;
+  font-weight: 800;
+}
+
+.comparison-card-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.comparison-card {
+  background: #fcfcfc;
+  border: 1px solid var(--udla-border);
+  border-radius: 8px;
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.comparison-card-header span {
+  color: var(--udla-muted);
+  display: block;
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.comparison-driver-row {
+  display: grid;
+  gap: 6px;
+}
+
+.marketing-mix-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.marketing-mix-card,
+.marketing-priority-card {
+  border: 1px solid var(--udla-border);
+  border-radius: 8px;
+  padding: 18px;
+}
+
+.marketing-mix-card {
+  background: #fcfcfc;
+  display: grid;
+  gap: 12px;
+}
+
+.marketing-mix-title {
+  align-items: center;
+  color: var(--udla-orange-deep);
+  display: flex;
+  gap: 8px;
+}
+
+.marketing-points {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.marketing-points li {
+  color: var(--udla-text);
+}
+
+.marketing-priority-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.marketing-priority-card {
+  background: #fffaf5;
+  display: grid;
+  gap: 12px;
+}
+
+.marketing-priority-head {
+  align-items: start;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.marketing-priority-card > span {
+  color: var(--udla-muted);
+  font-size: 13px;
+}
+
+.marketing-priority-metrics {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.marketing-priority-metrics div {
+  background: #ffffff;
+  border: 1px solid var(--udla-border);
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+}
+
+.marketing-priority-metrics strong {
+  font-size: 16px;
+}
+
+.marketing-priority-metrics span {
+  color: var(--udla-muted);
+  font-size: 12px;
+}
+
+.marketing-priority-card p {
+  color: var(--udla-text);
+  margin: 0;
+}
+
 .audit-toolbar {
   align-items: end;
   display: grid;

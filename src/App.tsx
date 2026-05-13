@@ -80,6 +80,8 @@ import type {
 
 const DashboardModule = lazy(() => import('./modules/insights').then((module) => ({ default: module.DashboardModule })));
 const AnalyticsModule = lazy(() => import('./modules/insights').then((module) => ({ default: module.AnalyticsModule })));
+const MarketingModule = lazy(() => import('./modules/insights').then((module) => ({ default: module.MarketingModule })));
+const DishComparisonModule = lazy(() => import('./modules/insights').then((module) => ({ default: module.DishComparisonModule })));
 const SimulationsModule = lazy(() => import('./modules/insights').then((module) => ({ default: module.SimulationsModule })));
 const ReportsModule = lazy(() => import('./modules/insights').then((module) => ({ default: module.ReportsModule })));
 
@@ -98,6 +100,8 @@ type View =
   | 'expenses'
   | 'planning'
   | 'analytics'
+  | 'marketing'
+  | 'comparison'
   | 'simulations'
   | 'reports'
   | 'settings';
@@ -214,6 +218,18 @@ const navItems: Array<{
     id: 'analytics',
     label: 'Menu engineering',
     icon: BarChart3,
+    roles: ['Administrador general', 'Gerente', 'Chef ejecutivo', 'Finanzas'],
+  },
+  {
+    id: 'marketing',
+    label: 'Marketing',
+    icon: Sparkles,
+    roles: ['Administrador general', 'Gerente', 'Chef ejecutivo', 'Finanzas'],
+  },
+  {
+    id: 'comparison',
+    label: 'Comparador platos',
+    icon: Scale,
     roles: ['Administrador general', 'Gerente', 'Chef ejecutivo', 'Finanzas'],
   },
   {
@@ -395,6 +411,27 @@ function generateIngredientInternalCode(
     .filter(Number.isFinite);
   const nextNumber = Math.max(0, ...usedNumbers) + 1;
   return `${prefix}-${String(nextNumber).padStart(3, '0')}`;
+}
+
+function getIngredientCategoryColorHex(
+  state: ReturnType<typeof useLocalStore>['state'],
+  categoryId: string,
+) {
+  const categoryName = state.categories.find((item) => item.id === categoryId)?.name
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase() ?? '';
+
+  if (categoryName.includes('pescad')) return '#1D4ED8';
+  if (categoryName.includes('marisc')) return '#0891B2';
+  if (categoryName.includes('verdur') || categoryName.includes('hierba')) return '#2E7D32';
+  if (categoryName.includes('citric')) return '#CA8A04';
+  if (categoryName.includes('lacteo')) return '#7C3AED';
+  if (categoryName.includes('fruta')) return '#C2410C';
+  if (categoryName.includes('repost') || categoryName.includes('masa')) return '#BE185D';
+  if (categoryName.includes('bodega') || categoryName.includes('seca')) return '#475569';
+
+  return '#6B7280';
 }
 
 function getSupplierCodeOptions(state: ReturnType<typeof useLocalStore>['state'], supplierId: string) {
@@ -1597,6 +1634,8 @@ export function App() {
           {activeView === 'expenses' && <ExpensesModule state={state} actions={actions} hasFinancialAccess={hasFinancialAccess} />}
           {activeView === 'planning' && <PlanningModule state={state} actions={actions} canManage={canManage} />}
           {activeView === 'analytics' && <AnalyticsModule state={state} />}
+          {activeView === 'marketing' && <MarketingModule state={state} />}
+          {activeView === 'comparison' && <DishComparisonModule state={state} />}
           {activeView === 'simulations' && <SimulationsModule state={state} />}
           {activeView === 'reports' && <ReportsModule state={state} />}
           {activeView === 'settings' && (
@@ -1988,7 +2027,7 @@ function IngredientsModule({
                         <button type="button" className="table-link-button" onClick={() => setDraft(recalculateIngredientDraftCosts(ingredient))}>{ingredient.name}</button>
                         <div className="helper-text">{ingredient.internalCode || ingredient.lotCode || 'Sin codigo'}</div>
                       </td>
-                      <td><ColorChip text={item.category?.name ?? 'Sin categoria'} colorHex={ingredient.colorHex} /></td>
+                      <td><ColorChip text={item.category?.name ?? 'Sin categoria'} colorHex={getIngredientCategoryColorHex(state, ingredient.categoryId)} /></td>
                       <td>{item.supplier?.name ?? 'Sin proveedor'}</td>
                       <td>
                         <strong>{money.format(ingredient.usefulUnitCost)}</strong>

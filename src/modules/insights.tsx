@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { Fragment } from 'react';
 import type { ReactNode } from 'react';
-import { AlertTriangle, BarChart3, Boxes, ClipboardList, Percent, Store, Target, TrendingDown, TrendingUp, Wallet } from 'lucide-react';
+import { AlertTriangle, BarChart3, Boxes, ClipboardList, Megaphone, Percent, Scale, Sparkles, Store, Target, TrendingDown, TrendingUp, Wallet } from 'lucide-react';
 import {
   Bar,
   BarChart,
@@ -15,7 +16,7 @@ import {
 } from 'recharts';
 import type { useLocalStore } from '../hooks/useLocalStore';
 import { money, percent } from '../lib/format';
-import { calculateProjectionRevenue, getDashboardMetrics, getLatestProjection, getMenuEngineering, getReportSnapshot, simulateDishScenario } from '../services/costEngine';
+import { calculateDishCost, calculateProjectionRevenue, getDashboardMetrics, getLatestProjection, getMenuEngineering, getReportSnapshot, roundPriceForCustomer, simulateDishScenario } from '../services/costEngine';
 
 type StoreState = ReturnType<typeof useLocalStore>['state'];
 
@@ -184,6 +185,618 @@ export function SimulationsModule({ state }: { state: StoreState }) {
           </div>
         )}
       </section>
+    </section>
+  );
+}
+
+function getDishCustomerPrice(dish: StoreState['dishes'][number], currentResult: ReturnType<typeof calculateDishCost>) {
+  return dish.customerFacingPrice && dish.customerFacingPrice > 0
+    ? dish.customerFacingPrice
+    : roundPriceForCustomer(currentResult.recommendedPrice);
+}
+
+function getMarginPercentOnSales(price: number, totalCost: number) {
+  return price > 0 ? (price - totalCost) / price : 0;
+}
+
+function getDefaultComparisonDishIds(dishes: StoreState['dishes']) {
+  return dishes.slice(0, Math.min(3, dishes.length)).map((dish) => dish.id);
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function getProjectedMonthlyDemandBase(state: StoreState) {
+  const latestProjection = getLatestProjection(state.projections);
+  if (latestProjection) {
+    const projectedRevenue = calculateProjectionRevenue(latestProjection);
+    const averagePrice =
+      state.dishes.reduce((sum, dish) => {
+        const result = calculateDishCost(state, dish);
+        return sum + getDishCustomerPrice(dish, result);
+      }, 0) / Math.max(state.dishes.length, 1);
+    return Math.max(Math.round(projectedRevenue / Math.max(averagePrice, 1)), state.dishes.length * 18);
+  }
+
+  const historicalUnits = state.sales.reduce(
+    (sum, sale) => sum + sale.items.reduce((lineSum, item) => lineSum + item.quantity, 0),
+    0,
+  );
+  return Math.max(historicalUnits, state.dishes.length * 18);
+}
+
+function getCategoryName(state: StoreState, categoryId: string) {
+  return state.categories.find((category) => category.id === categoryId)?.name ?? 'Sin categoria';
+}
+
+function normalizeMarketingToken(value: string) {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function isSalmonMixSaladDish(name: string) {
+  const token = normalizeMarketingToken(name);
+  return token.includes('salmon') && token.includes('ensalada');
+}
+
+function isDessertCategory(categoryName: string) {
+  return normalizeMarketingToken(categoryName).includes('postre');
+}
+
+function getDishAppealWeight(dish: StoreState['dishes'][number], categoryName: string) {
+  const token = `${dish.name} ${categoryName}`.toLowerCase();
+  if (token.includes('salmon') && token.includes('ensalada')) return 26;
+  if (token.includes('ceviche') || token.includes('ostiones') || token.includes('pulpo')) return 15;
+  if (token.includes('congrio') || token.includes('camaron')) return 14;
+  if (token.includes('salmon')) return 16;
+  if (token.includes('panacota') || token.includes('maracuya') || token.includes('selectino')) return 7;
+  return 12;
+}
+
+function getPopularityTier(score: number) {
+  if (score >= 75) return { label: 'Alta', tone: 'ok' as const };
+  if (score >= 55) return { label: 'Media', tone: 'warning' as const };
+  return { label: 'Baja', tone: 'danger' as const };
+}
+
+function getMarginTier(score: number) {
+  if (score >= 0.68) return { label: 'Alto', tone: 'ok' as const };
+  if (score >= 0.52) return { label: 'Medio', tone: 'warning' as const };
+  return { label: 'Bajo', tone: 'danger' as const };
+}
+
+function getCommercialPriority(popularityScore: number, grossMarginPercent: number) {
+  if (popularityScore >= 72 && grossMarginPercent >= 0.62) {
+    return {
+      label: 'Heroe comercial',
+      tone: 'ok' as const,
+      action: 'Empujar en carta, sala y redes. Es candidato a plato-ancla.',
+    };
+  }
+  if (popularityScore >= 65 && grossMarginPercent < 0.62) {
+    return {
+      label: 'Traccion con ajuste',
+      tone: 'warning' as const,
+      action: 'Vende bien, pero conviene proteger margen con precio, guarnicion o gramaje.',
+    };
+  }
+  if (popularityScore < 65 && grossMarginPercent >= 0.62) {
+    return {
+      label: 'Potencial rentable',
+      tone: 'warning' as const,
+      action: 'Tiene buen bruto, pero necesita visibilidad y venta sugerida.',
+    };
+  }
+  return {
+    label: 'Secundario',
+    tone: 'danger' as const,
+    action: 'Mantener en segundo plano, testear o rediseñar propuesta.',
+  };
+}
+
+export function MarketingModule({ state }: { state: StoreState }) {
+  const analysis = useMemo(() => {
+    const demandBase = getProjectedMonthlyDemandBase(state);
+    const rows = state.dishes.map((dish) => {
+      const result = calculateDishCost(state, dish);
+      const currentPrice = getDishCustomerPrice(dish, result);
+      const historicalUnits = state.sales.reduce(
+        (sum, sale) => sum + sale.items.filter((item) => item.dishId === dish.id).reduce((lineSum, item) => lineSum + item.quantity, 0),
+        0,
+      );
+      const categoryName = getCategoryName(state, dish.categoryId);
+      return {
+        dish,
+        result,
+        currentPrice,
+        historicalUnits,
+        categoryName,
+        directGrossProfit: currentPrice - result.directCost,
+        grossMarginPercentOnCurrentPrice: currentPrice > 0 ? (currentPrice - result.directCost) / currentPrice : 0,
+      };
+    });
+
+    const maxHistoricalUnits = Math.max(...rows.map((row) => row.historicalUnits), 0);
+    const minPrice = Math.min(...rows.map((row) => row.currentPrice), 0);
+    const maxPrice = Math.max(...rows.map((row) => row.currentPrice), 1);
+    const minLabor = Math.min(...rows.map((row) => row.dish.laborMinutes), 0);
+    const maxLabor = Math.max(...rows.map((row) => row.dish.laborMinutes), 1);
+
+    const withScores = rows.map((row) => {
+      const historyScore = maxHistoricalUnits > 0 ? (row.historicalUnits / maxHistoricalUnits) * 38 : 19;
+      const priceScore = maxPrice > minPrice ? ((maxPrice - row.currentPrice) / (maxPrice - minPrice)) * 20 : 10;
+      const laborScore = maxLabor > minLabor ? ((maxLabor - row.dish.laborMinutes) / (maxLabor - minLabor)) * 14 : 7;
+      const appealScore = getDishAppealWeight(row.dish, row.categoryName);
+      const marginScore = clamp(row.grossMarginPercentOnCurrentPrice / 0.75, 0, 1) * 13;
+      const popularityScore = clamp(historyScore + priceScore + laborScore + appealScore + marginScore, 18, 96);
+      return {
+        ...row,
+        popularityScore,
+      };
+    });
+
+    const totalPopularityScore = withScores.reduce((sum, row) => sum + row.popularityScore, 0);
+
+    const enriched = withScores.map((row) => {
+      const expectedShare = totalPopularityScore > 0 ? row.popularityScore / totalPopularityScore : 1 / Math.max(withScores.length, 1);
+      const expectedMonthlyUnits = Math.max(Math.round(demandBase * expectedShare), 1);
+      const expectedGrossRevenue = expectedMonthlyUnits * row.currentPrice;
+      const expectedGrossProfit = expectedMonthlyUnits * Math.max(row.directGrossProfit, 0);
+      const popularityTier = getPopularityTier(row.popularityScore);
+      const marginTier = getMarginTier(row.grossMarginPercentOnCurrentPrice);
+      const priority = getCommercialPriority(row.popularityScore, row.grossMarginPercentOnCurrentPrice);
+      return {
+        ...row,
+        expectedShare,
+        expectedMonthlyUnits,
+        expectedGrossRevenue,
+        expectedGrossProfit,
+        popularityTier,
+        marginTier,
+        priority,
+      };
+    }).sort((a, b) => b.expectedGrossProfit - a.expectedGrossProfit);
+
+    const topHero = enriched[0] ?? null;
+    const topPopularity =
+      enriched.find((row) => isSalmonMixSaladDish(row.dish.name)) ??
+      [...enriched].sort((a, b) => b.popularityScore - a.popularityScore)[0] ??
+      null;
+    const topMargin = [...enriched].sort((a, b) => b.grossMarginPercentOnCurrentPrice - a.grossMarginPercentOnCurrentPrice)[0] ?? null;
+    const prioritySet = enriched.slice(0, 3);
+    const savoryRows = enriched.filter((row) => !isDessertCategory(row.categoryName));
+    const accessDish = [...(savoryRows.length > 0 ? savoryRows : enriched)].sort((a, b) => a.currentPrice - b.currentPrice)[0] ?? null;
+    const premiumDish = [...(savoryRows.length > 0 ? savoryRows : enriched)].sort((a, b) => b.currentPrice - a.currentPrice)[0] ?? null;
+    const dessertDish = enriched.find((row) => isDessertCategory(row.categoryName)) ?? null;
+
+    return {
+      demandBase,
+      rows: enriched,
+      topHero,
+      topPopularity,
+      topMargin,
+      prioritySet,
+      accessDish,
+      premiumDish,
+      dessertDish,
+    };
+  }, [state]);
+
+  const marketingMix = useMemo(() => {
+    const heroNames = analysis.prioritySet.map((item) => item.dish.name).join(', ');
+    return [
+      {
+        title: 'Producto',
+        icon: Sparkles,
+        points: [
+          `La propuesta de venta debe girar en torno a ${heroNames || 'los platos con mayor atractivo comercial'}.`,
+          'Destaca frescura marina, ejecucion premium y recetas base propias como parte del valor percibido.',
+          'Usa fotografia real, montaje consistente y descriptores cortos orientados a deseo y confianza.',
+        ],
+      },
+      {
+        title: 'Precio',
+        icon: Wallet,
+        points: [
+          analysis.accessDish ? `${analysis.accessDish.dish.name} funciona como plato de entrada o acceso de ticket.` : 'Define un plato de entrada de ticket para capturar volumen.',
+          analysis.premiumDish ? `${analysis.premiumDish.dish.name} debe sostener el ancla premium del menu.` : 'Mantén un ancla premium visible para elevar el ticket medio.',
+          'Protege margen bruto en platos de alta salida con bundles, extras y venta sugerida antes que con descuentos planos.',
+        ],
+      },
+      {
+        title: 'Plaza',
+        icon: Store,
+        points: [
+          'Prioriza sala y cena como espacio principal de empuje para platos marinos de mayor valor percibido.',
+          analysis.dessertDish ? `${analysis.dessertDish.dish.name} debe activarse en cierre de comida, carta de postres y venta de sobremesa.` : 'Activa postres en cierre de comida y venta sugerida.',
+          'Entrega el mismo mensaje comercial en carta, recomendacion del garzon, vitrina digital y RRSS.',
+        ],
+      },
+      {
+        title: 'Promocion',
+        icon: Megaphone,
+        points: [
+          'Crea recomendacion guiada del equipo: plato estrella, maridaje, postre y upsell corto por servicio.',
+          'Empuja contenido semanal con foco en plato heroe, prueba social y argumento de frescura/calidad.',
+          'Usa combos de margen protegido: plato + bebida o plato + postre, evitando promociones que erosionen el bruto.',
+        ],
+      },
+    ];
+  }, [analysis]);
+
+  return (
+    <section className="content-stack">
+      <div className="kpi-grid">
+        <KpiCard title="Demanda mensual estimada" value={`${analysis.demandBase} platos`} icon={TrendingUp} />
+        <KpiCard title="Plato con mayor tiraje esperado" value={analysis.topPopularity ? analysis.topPopularity.dish.name : 'Sin datos'} icon={Target} />
+        <KpiCard title="Plato con mayor bruto esperado" value={analysis.topHero ? analysis.topHero.dish.name : 'Sin datos'} icon={Wallet} />
+        <KpiCard title="Mayor margen bruto esperado" value={analysis.topMargin ? `${analysis.topMargin.dish.name} · ${percent.format(analysis.topMargin.grossMarginPercentOnCurrentPrice)}` : 'Sin datos'} icon={BarChart3} />
+      </div>
+
+      <section className="panel">
+        <PanelHeader title="Propuesta comercial y mix de marketing" />
+        <div className="marketing-mix-grid">
+          {marketingMix.map((block) => (
+            <section className="marketing-mix-card" key={block.title}>
+              <div className="marketing-mix-title">
+                <block.icon size={18} />
+                <strong>{block.title}</strong>
+              </div>
+              <ul className="marketing-points">
+                {block.points.map((point) => <li key={point}>{point}</li>)}
+              </ul>
+            </section>
+          ))}
+        </div>
+      </section>
+
+      <div className="dashboard-grid">
+        <section className="panel wide">
+          <PanelHeader title="Popularidad esperada y margen bruto esperado" />
+          <DataTable
+            headers={[
+              'Plato',
+              'Categoria',
+              'Precio actual',
+              'Popularidad esperada',
+              'Margen bruto esperado',
+              'Utilidad bruta por plato',
+              'Unidades/mes esperadas',
+              'Utilidad bruta mensual esperada',
+              'Prioridad comercial',
+            ]}
+            rows={analysis.rows.map((row) => [
+              row.dish.name,
+              row.categoryName,
+              money.format(row.currentPrice),
+              <StatusBadge key={`${row.dish.id}-pop`} text={`${row.popularityTier.label} · ${row.popularityScore.toFixed(0)}/100`} tone={row.popularityTier.tone} />,
+              <StatusBadge key={`${row.dish.id}-margin`} text={`${row.marginTier.label} · ${percent.format(row.grossMarginPercentOnCurrentPrice)}`} tone={row.marginTier.tone} />,
+              money.format(row.directGrossProfit),
+              `${row.expectedMonthlyUnits}`,
+              money.format(row.expectedGrossProfit),
+              <StatusBadge key={`${row.dish.id}-priority`} text={row.priority.label} tone={row.priority.tone} />,
+            ])}
+          />
+        </section>
+
+        <section className="panel">
+          <PanelHeader title="Top prioridades de venta" />
+          <div className="marketing-priority-grid">
+            {analysis.prioritySet.map((row) => (
+              <article className="marketing-priority-card" key={row.dish.id}>
+                <div className="marketing-priority-head">
+                  <strong>{row.dish.name}</strong>
+                  <StatusBadge text={row.priority.label} tone={row.priority.tone} />
+                </div>
+                <span>{row.categoryName}</span>
+                <div className="marketing-priority-metrics">
+                  <div><strong>{percent.format(row.grossMarginPercentOnCurrentPrice)}</strong><span>margen bruto</span></div>
+                  <div><strong>{row.expectedMonthlyUnits}</strong><span>uds/mes</span></div>
+                  <div><strong>{money.format(row.expectedGrossProfit)}</strong><span>bruto mensual</span></div>
+                </div>
+                <p>{row.priority.action}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+      </div>
+
+      <section className="panel">
+        <PanelHeader title="Lectura comercial ejecutiva" />
+        <div className="summary-strip wide">
+          <SummaryMetric label="Plato heroe sugerido" value={analysis.topHero ? analysis.topHero.dish.name : 'Sin datos'} />
+          <SummaryMetric label="Plato de acceso" value={analysis.accessDish ? analysis.accessDish.dish.name : 'Sin datos'} />
+          <SummaryMetric label="Ancla premium" value={analysis.premiumDish ? analysis.premiumDish.dish.name : 'Sin datos'} />
+          <SummaryMetric label="Postre de empuje" value={analysis.dessertDish ? analysis.dessertDish.dish.name : 'Sin datos'} />
+        </div>
+      </section>
+    </section>
+  );
+}
+
+export function DishComparisonModule({ state }: { state: StoreState }) {
+  const [selectedDishIds, setSelectedDishIds] = useState<string[]>(() => getDefaultComparisonDishIds(state.dishes));
+
+  useEffect(() => {
+    const validIds = new Set(state.dishes.map((dish) => dish.id));
+    setSelectedDishIds((current) => {
+      const filtered = current.filter((dishId) => validIds.has(dishId));
+      if (filtered.length > 0) return filtered;
+      return getDefaultComparisonDishIds(state.dishes);
+    });
+  }, [state.dishes]);
+
+  const selectedResults = useMemo(() => {
+    const seen = new Set<string>();
+    return selectedDishIds
+      .filter((dishId) => {
+        if (!dishId || seen.has(dishId)) return false;
+        seen.add(dishId);
+        return true;
+      })
+      .map((dishId) => {
+        const dish = state.dishes.find((item) => item.id === dishId);
+        if (!dish) return null;
+        const result = calculateDishCost(state, dish);
+        const customerPrice = getDishCustomerPrice(dish, result);
+        const topDrivers = [...result.componentLines]
+          .sort((a, b) => b.lineCost - a.lineCost)
+          .slice(0, 4);
+        return {
+          dish,
+          result,
+          customerPrice,
+          customerMarginPercent: getMarginPercentOnSales(customerPrice, result.totalCost),
+          topDrivers,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  }, [selectedDishIds, state]);
+
+  const summary = useMemo(() => {
+    if (selectedResults.length === 0) return null;
+    const lowestTotalCost = [...selectedResults].sort((a, b) => a.result.totalCost - b.result.totalCost)[0];
+    const highestMargin = [...selectedResults].sort((a, b) => b.customerMarginPercent - a.customerMarginPercent)[0];
+    const highestFoodCost = [...selectedResults].sort((a, b) => b.result.foodCostPercent - a.result.foodCostPercent)[0];
+    return { lowestTotalCost, highestMargin, highestFoodCost };
+  }, [selectedResults]);
+
+  const comparisonSections = useMemo(() => ([
+    {
+      title: 'Precio y rentabilidad',
+      rows: [
+        {
+          label: 'Precio carta actual',
+          render: (item: typeof selectedResults[number]) => money.format(item.customerPrice),
+        },
+        {
+          label: 'Precio tecnico recomendado',
+          render: (item: typeof selectedResults[number]) => money.format(roundPriceForCustomer(item.result.recommendedPrice)),
+        },
+        {
+          label: 'Food cost sobre precio actual',
+          render: (item: typeof selectedResults[number]) => percent.format(item.customerPrice > 0 ? item.result.directCost / item.customerPrice : 0),
+        },
+        {
+          label: 'Margen real de ganancia',
+          render: (item: typeof selectedResults[number]) => percent.format(item.customerMarginPercent),
+        },
+        {
+          label: 'Ganancia real por plato',
+          render: (item: typeof selectedResults[number]) => money.format(item.customerPrice - item.result.totalCost),
+        },
+        {
+          label: 'Rentabilidad sobre costo',
+          render: (item: typeof selectedResults[number]) => percent.format(item.result.totalUtilityOnCostPercent),
+        },
+      ],
+    },
+    {
+      title: 'Costo directo del plato',
+      rows: [
+        {
+          label: 'Materia prima directa',
+          render: (item: typeof selectedResults[number]) => money.format(item.result.materialCost),
+        },
+        {
+          label: 'Merma aplicada',
+          render: (item: typeof selectedResults[number]) => money.format(item.result.wasteCost),
+        },
+        {
+          label: 'Packaging',
+          render: (item: typeof selectedResults[number]) => money.format(item.result.packagingCost),
+        },
+        {
+          label: 'Costo directo total',
+          render: (item: typeof selectedResults[number]) => money.format(item.result.directCost),
+        },
+      ],
+    },
+    {
+      title: 'Produccion y recetas base',
+      rows: [
+        {
+          label: 'Costo total recetas base',
+          render: (item: typeof selectedResults[number]) => money.format(item.result.baseRecipeCost),
+        },
+        {
+          label: 'MO embebida en recetas base',
+          render: (item: typeof selectedResults[number]) => money.format(item.result.baseRecipeLaborCost),
+        },
+        {
+          label: 'Indirectos embebidos en recetas base',
+          render: (item: typeof selectedResults[number]) => money.format(item.result.baseRecipeIndirectCost),
+        },
+        {
+          label: 'MO armado final',
+          render: (item: typeof selectedResults[number]) => money.format(item.result.laborCost),
+        },
+        {
+          label: 'Costo de produccion',
+          render: (item: typeof selectedResults[number]) => money.format(item.result.productionCost),
+        },
+      ],
+    },
+    {
+      title: 'Estructura e indirectos',
+      rows: [
+        {
+          label: 'Indirectos variables',
+          render: (item: typeof selectedResults[number]) => money.format(item.result.variableCost),
+        },
+        {
+          label: 'Indirectos fijos asignados',
+          render: (item: typeof selectedResults[number]) => money.format(item.result.fixedAllocatedCost),
+        },
+        {
+          label: 'Comisiones / pasarela',
+          render: (item: typeof selectedResults[number]) => money.format(item.result.commissionCost),
+        },
+        {
+          label: 'Buffer de seguridad',
+          render: (item: typeof selectedResults[number]) => money.format(item.result.safetyBufferCost),
+        },
+        {
+          label: 'Costo total final',
+          render: (item: typeof selectedResults[number]) => <strong>{money.format(item.result.totalCost)}</strong>,
+        },
+      ],
+    },
+  ]), [selectedResults]);
+
+  return (
+    <section className="content-stack">
+      <section className="panel">
+        <PanelHeader title="Comparador de platos finales" />
+        <div className="comparison-selector-toolbar">
+          {selectedDishIds.map((dishId, index) => (
+            <label key={`${dishId || 'empty'}-${index}`}>
+              Plato {index + 1}
+              <div className="comparison-selector-row">
+                <select
+                  value={dishId}
+                  onChange={(event) => setSelectedDishIds((current) => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))}
+                >
+                  <option value="">Seleccionar plato</option>
+                  {state.dishes.map((dish) => <option key={dish.id} value={dish.id}>{dish.name}</option>)}
+                </select>
+                {selectedDishIds.length > 2 && (
+                  <button
+                    className="icon-button"
+                    type="button"
+                    title="Quitar plato"
+                    onClick={() => setSelectedDishIds((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+            </label>
+          ))}
+        </div>
+        <div className="toolbar">
+          <button
+            className="secondary-button compact"
+            type="button"
+            disabled={selectedDishIds.length >= Math.min(4, state.dishes.length) || state.dishes.length === 0}
+            onClick={() => {
+              const currentSet = new Set(selectedDishIds);
+              const nextDish = state.dishes.find((dish) => !currentSet.has(dish.id));
+              if (!nextDish) return;
+              setSelectedDishIds((current) => [...current, nextDish.id]);
+            }}
+          >
+            <Scale size={16} /> Agregar plato
+          </button>
+        </div>
+      </section>
+
+      {summary && (
+        <div className="summary-strip compact">
+          <SummaryMetric label="Platos comparados" value={String(selectedResults.length)} />
+          <SummaryMetric label="Menor costo total" value={`${summary.lowestTotalCost.dish.name} · ${money.format(summary.lowestTotalCost.result.totalCost)}`} />
+          <SummaryMetric label="Mayor margen real" value={`${summary.highestMargin.dish.name} · ${percent.format(summary.highestMargin.customerMarginPercent)}`} />
+          <SummaryMetric label="Food cost mas alto" value={`${summary.highestFoodCost.dish.name} · ${percent.format(summary.highestFoodCost.result.foodCostPercent)}`} />
+        </div>
+      )}
+
+      {selectedResults.length > 0 ? (
+        <>
+          <section className="panel">
+            <PanelHeader title="Comparacion integral de costos" />
+            <div className="compact-shell comparison-shell">
+              <table className="comparison-table">
+                <thead>
+                  <tr>
+                    <th>Concepto</th>
+                    {selectedResults.map((item) => (
+                      <th key={item.dish.id}>
+                        <div className="comparison-column-head">
+                          <strong>{item.dish.name}</strong>
+                          <span>{item.dish.service}</span>
+                        </div>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {comparisonSections.map((section) => (
+                    <Fragment key={section.title}>
+                      <tr className="comparison-section-row">
+                        <td colSpan={selectedResults.length + 1}>{section.title}</td>
+                      </tr>
+                      {section.rows.map((row) => (
+                        <tr key={`${section.title}-${row.label}`}>
+                          <td className="comparison-label-cell">{row.label}</td>
+                          {selectedResults.map((item) => (
+                            <td key={`${item.dish.id}-${row.label}`} className="comparison-value-cell">{row.render(item)}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section className="panel">
+            <PanelHeader title="Drivers principales por plato" />
+            <div className="comparison-card-grid">
+              {selectedResults.map((item) => (
+                <section className="comparison-card" key={item.dish.id}>
+                  <div className="comparison-card-header">
+                    <div>
+                      <strong>{item.dish.name}</strong>
+                      <span>{`${money.format(item.result.totalCost)} costo total · ${percent.format(item.customerMarginPercent)} margen real`}</span>
+                    </div>
+                  </div>
+                  <div className="stack-list">
+                    {item.topDrivers.map((line) => (
+                      <div className="record-row comparison-driver-row" key={line.componentId}>
+                        <strong>{line.componentName}</strong>
+                        <span>{`${line.quantity} ${line.unit} · ${line.componentType === 'baseRecipe' ? 'Receta base' : line.componentType === 'packaging' ? 'Packaging' : 'Ingrediente'}`}</span>
+                        <strong>{money.format(line.lineCost)}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ))}
+            </div>
+          </section>
+        </>
+      ) : (
+        <section className="panel">
+          <PanelHeader title="Comparacion integral de costos" />
+          <div className="report-empty-state">
+            <strong>Sin platos seleccionados</strong>
+            <span>Selecciona al menos un plato final para comparar costo directo, produccion, indirectos, precio y margen.</span>
+          </div>
+        </section>
+      )}
     </section>
   );
 }
