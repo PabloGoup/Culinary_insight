@@ -3376,7 +3376,7 @@ function DishesModule({
             <div className="report-metric-row child">
               <div>
                 <span>Margen de seguridad</span>
-                <small>Buffer tecnico del 3%.</small>
+                <small>Buffer tecnico del 2%.</small>
               </div>
               <strong>{money.format(dishResult.safetyBufferCost)}</strong>
             </div>
@@ -3493,7 +3493,7 @@ function DishesModule({
                 <tr><td>Costos fijos prorrateados</td><td>{money.format(dishResult.fixedAllocatedCost)}</td><td>{`${money.format(dishCapacitySnapshot.fixedStructureMonthlyCost)} / ${dishCapacitySnapshot.monthlyCapacityPlates} platos de capacidad mensual util.`}</td></tr>
                 <tr><td>Comisiones</td><td>{money.format(dishResult.commissionCost)}</td><td>Costos indirectos marcados como comision.</td></tr>
                 <tr><td>Packaging</td><td>{money.format(dishResult.packagingCost)}</td><td>Elementos de empaque asociados al plato.</td></tr>
-                <tr><td>Margen de seguridad</td><td>{money.format(dishResult.safetyBufferCost)}</td><td>Buffer tecnico del 3% sobre el subtotal operativo.</td></tr>
+                <tr><td>Margen de seguridad</td><td>{money.format(dishResult.safetyBufferCost)}</td><td>Buffer tecnico del 2% sobre el subtotal operativo.</td></tr>
                 <tr><td>Subtotal operativo</td><td>{money.format(dishResult.subtotalBeforeMargin)}</td><td>Base completa de costos del plato.</td></tr>
                 <tr><td>Utilidad objetivo sobre MP</td><td>{money.format(dishResult.utilityTargetAmount)}</td><td>{`${money.format(dishResult.materialCost)} x ${percent.format(dish.desiredMargin)}.`}</td></tr>
                 <tr><td>Precio por formula</td><td>{money.format(dishResult.formulaPrice)}</td><td>Costo total + utilidad objetivo sobre materia prima.</td></tr>

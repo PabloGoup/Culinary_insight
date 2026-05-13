@@ -424,10 +424,10 @@ export function MarketingModule({ state }: { state: StoreState }) {
             : row.priority.label === 'Traccion con ajuste'
               ? 78
               : row.priority.label === 'Potencial rentable'
-                ? 72
+                ? 72 
                 : 60,
-          75,
-          90,
+          92,
+          92,
         );
         const averageScore = Math.max(Math.round((productScore + priceScore + placeScore + promotionScore) / 4), 75);
         return {

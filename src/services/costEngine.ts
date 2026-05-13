@@ -433,7 +433,7 @@ export function calculateDishCost(state: AppState, dish: Dish): DishCostResult {
     fixedAllocatedCost +
     commissionCost +
     packagingCost;
-  const safetyBufferCost = subtotalWithoutSafety * 0.03;
+  const safetyBufferCost = subtotalWithoutSafety * 0.02;
   const subtotalBeforeMargin = subtotalWithoutSafety + safetyBufferCost;
   const totalCost = subtotalBeforeMargin;
   const targetFoodCost = Math.max(getEffectiveFoodCostTarget(state, dish), 0.01);
