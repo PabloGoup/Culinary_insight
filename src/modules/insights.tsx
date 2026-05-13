@@ -297,6 +297,39 @@ function getCommercialPriority(popularityScore: number, grossMarginPercent: numb
   };
 }
 
+function getSurveyScoreTone(score: number) {
+  if (score >= 100) return 'ok' as const;
+  if (score >= 75) return 'warning' as const;
+  return 'danger' as const;
+}
+
+function getSimulatedSurveyInsight(input: {
+  isDessert: boolean;
+  productScore: number;
+  priceScore: number;
+  placeScore: number;
+  promotionScore: number;
+}) {
+  const weakest = [
+    { key: 'product', label: 'producto', score: input.productScore },
+    { key: 'price', label: 'precio', score: input.priceScore },
+    { key: 'place', label: 'plaza', score: input.placeScore },
+    { key: 'promotion', label: 'promocion', score: input.promotionScore },
+  ].sort((a, b) => a.score - b.score)[0];
+
+  if (input.isDessert) {
+    if (weakest.key === 'promotion') return 'Buen cierre de comida; necesita mayor recomendacion en sobremesa.';
+    if (weakest.key === 'price') return 'Se percibe atractivo, pero conviene reforzar valor frente al precio.';
+    if (weakest.key === 'place') return 'Tiene espacio en carta y postventa; falta activacion en cierre de servicio.';
+    return 'Postre con base comercial correcta; conviene afinar relato y presentacion.';
+  }
+
+  if (weakest.key === 'promotion') return 'Tiene potencial de venta, pero le falta empuje comercial del equipo.';
+  if (weakest.key === 'price') return 'La propuesta gusta, aunque el precio exige mejor justificacion de valor.';
+  if (weakest.key === 'place') return 'Puede crecer si gana mas visibilidad en sala, carta y recomendacion.';
+  return 'Buen ajuste comercial general; requiere afinar propuesta de producto para escalar.';
+}
+
 export function MarketingModule({ state }: { state: StoreState }) {
   const analysis = useMemo(() => {
     const demandBase = getProjectedMonthlyDemandBase(state);
@@ -371,10 +404,57 @@ export function MarketingModule({ state }: { state: StoreState }) {
     const accessDish = [...(savoryRows.length > 0 ? savoryRows : enriched)].sort((a, b) => a.currentPrice - b.currentPrice)[0] ?? null;
     const premiumDish = [...(savoryRows.length > 0 ? savoryRows : enriched)].sort((a, b) => b.currentPrice - a.currentPrice)[0] ?? null;
     const dessertDish = enriched.find((row) => isDessertCategory(row.categoryName)) ?? null;
+    const surveyRows = enriched
+      .map((row) => {
+        const isDessert = isDessertCategory(row.categoryName);
+        const normalizedPrice = maxPrice > minPrice ? (row.currentPrice - minPrice) / (maxPrice - minPrice) : 0.5;
+        const valueForMoney = clamp((1 - normalizedPrice) * 100, 75, 92);
+        const productScore = clamp(row.popularityScore * 0.48 + row.grossMarginPercentOnCurrentPrice * 28 + getDishAppealWeight(row.dish, row.categoryName), 75, 96);
+        const priceScore = clamp(valueForMoney * 0.7 + row.grossMarginPercentOnCurrentPrice * 24 + (isDessert ? 8 : 0), 75, 94);
+        const placeScore = clamp(
+          row.expectedMonthlyUnits > 0
+            ? (isDessert ? 70 : 76) + row.popularityScore * 0.12 + (row.expectedMonthlyUnits >= demandBase / Math.max(enriched.length, 1) ? 6 : 0)
+            : 62,
+          75,
+          95,
+        );
+        const promotionScore = clamp(
+          row.priority.label === 'Heroe comercial'
+            ? 90
+            : row.priority.label === 'Traccion con ajuste'
+              ? 78
+              : row.priority.label === 'Potencial rentable'
+                ? 72
+                : 60,
+          75,
+          90,
+        );
+        const averageScore = Math.max(Math.round((productScore + priceScore + placeScore + promotionScore) / 4), 75);
+        return {
+          ...row,
+          isDessert,
+          survey: {
+            productScore: Math.round(productScore),
+            priceScore: Math.round(priceScore),
+            placeScore: Math.round(placeScore),
+            promotionScore: Math.round(promotionScore),
+            averageScore,
+            insight: getSimulatedSurveyInsight({
+              isDessert,
+              productScore,
+              priceScore,
+              placeScore,
+              promotionScore,
+            }),
+          },
+        };
+      })
+      .sort((a, b) => b.survey.averageScore - a.survey.averageScore);
 
     return {
       demandBase,
       rows: enriched,
+      surveyRows,
       topHero,
       topPopularity,
       topMargin,
@@ -451,6 +531,22 @@ export function MarketingModule({ state }: { state: StoreState }) {
             </section>
           ))}
         </div>
+      </section>
+
+      <section className="panel">
+        <PanelHeader title="Encuesta simulada por plato segun mix de marketing" />
+        <DataTable
+          headers={['Plato', 'Producto', 'Precio', 'Plaza', 'Promocion', 'Promedio', 'Lectura simulada']}
+          rows={analysis.surveyRows.map((row) => [
+            row.dish.name,
+            <StatusBadge key={`${row.dish.id}-survey-product`} text={`${row.survey.productScore}/100`} tone={getSurveyScoreTone(row.survey.productScore)} />,
+            <StatusBadge key={`${row.dish.id}-survey-price`} text={`${row.survey.priceScore}/100`} tone={getSurveyScoreTone(row.survey.priceScore)} />,
+            <StatusBadge key={`${row.dish.id}-survey-place`} text={`${row.survey.placeScore}/100`} tone={getSurveyScoreTone(row.survey.placeScore)} />,
+            <StatusBadge key={`${row.dish.id}-survey-promo`} text={`${row.survey.promotionScore}/100`} tone={getSurveyScoreTone(row.survey.promotionScore)} />,
+            <StatusBadge key={`${row.dish.id}-survey-average`} text={`${row.survey.averageScore}/100`} tone={getSurveyScoreTone(row.survey.averageScore)} />,
+            row.survey.insight,
+          ])}
+        />
       </section>
 
       <div className="dashboard-grid">
