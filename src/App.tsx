@@ -3298,6 +3298,20 @@ function DishesModule({
             </div>
             <div className="report-metric-row child">
               <div>
+                <span>Food cost %</span>
+                <small>Materia prima total de receta base y receta final sobre precio cliente. Maximo permitido 25%.</small>
+              </div>
+              <strong>{percent.format(dishResult.foodCostPercent)}</strong>
+            </div>
+            <div className="report-metric-row child">
+              <div>
+                <span>MBE %</span>
+                <small>Margen bruto esperado: precio cliente menos food cost. Minimo requerido 75%.</small>
+              </div>
+              <strong>{percent.format(dishResult.mbePercent)}</strong>
+            </div>
+            <div className="report-metric-row child">
+              <div>
                 <span>Merma</span>
                 <small>Merma valorizada del plato.</small>
               </div>
@@ -3430,9 +3444,16 @@ function DishesModule({
             <div className="report-metric-row child">
               <div>
                 <span>Food cost %</span>
-                <small>Peso de materia prima, merma y packaging sobre la venta.</small>
+                <small>Peso de materia prima total sobre la venta.</small>
               </div>
               <strong>{percent.format(dishResult.foodCostPercent)}</strong>
+            </div>
+            <div className="report-metric-row child">
+              <div>
+                <span>MBE %</span>
+                <small>Ganancia bruta esperada sobre precio cliente.</small>
+              </div>
+              <strong>{percent.format(dishResult.mbePercent)}</strong>
             </div>
           </div>
         </CollapsibleSection>
@@ -3723,6 +3744,7 @@ function DishesModule({
                       <th>Costo total</th>
                       <th>Precio cliente</th>
                       <th>Margen real %</th>
+                      <th>MBE %</th>
                       <th></th>
                     </tr>
                   </thead>
@@ -3743,6 +3765,7 @@ function DishesModule({
                             <td>{money.format(dishResult.totalCost)}</td>
                             <td>{money.format(customerPrice)}</td>
                             <td>{percent.format(getMarginPercentOnSales(customerPrice, dishResult.totalCost))}</td>
+                            <td>{percent.format(dishResult.mbePercent)}</td>
                             <td>
                               <div className="row-actions">
                                 <button
@@ -3759,7 +3782,7 @@ function DishesModule({
                           </tr>
                           {isExpanded ? (
                             <tr className="table-inline-analysis-row">
-                              <td colSpan={7}>
+                              <td colSpan={8}>
                                 {renderDishAnalysis(dish)}
                               </td>
                             </tr>
@@ -3788,6 +3811,7 @@ function DishesModule({
                       <th>Costo total</th>
                       <th>Precio cliente</th>
                       <th>Margen real %</th>
+                      <th>MBE %</th>
                       <th></th>
                     </tr>
                   </thead>
@@ -3808,6 +3832,7 @@ function DishesModule({
                             <td>{money.format(dishResult.totalCost)}</td>
                             <td>{money.format(customerPrice)}</td>
                             <td>{percent.format(getMarginPercentOnSales(customerPrice, dishResult.totalCost))}</td>
+                            <td>{percent.format(dishResult.mbePercent)}</td>
                             <td>
                               <div className="row-actions">
                                 <button
@@ -5799,8 +5824,8 @@ function RawMaterialPricesSheet({
         <PanelHeader title="Planilla referencial de materias primas" />
         <div className="summary-strip compact">
           <SummaryMetric label="Ingredientes activos" value={String(state.ingredients.length)} />
-          <SummaryMetric label="Costo util promedio" value={money.format(state.ingredients.reduce((sum, item) => sum + item.usefulUnitCost, 0) / Math.max(state.ingredients.length, 1))} />
-          <SummaryMetric label="Stock valorizado" value={money.format(state.ingredients.reduce((sum, item) => sum + item.currentStock * item.usefulUnitCost, 0))} />
+          <SummaryMetric label="Costo util promedio" value={money.format(state.ingredients.reduce((sum, item) => sum + calculateUsefulUnitCost(item.purchasePrice, item.purchaseUnit, item.useUnit, item.usableYieldPercent), 0) / Math.max(state.ingredients.length, 1))} />
+          <SummaryMetric label="Stock valorizado" value={money.format(state.ingredients.reduce((sum, item) => sum + item.currentStock * calculateUsefulUnitCost(item.purchasePrice, item.purchaseUnit, item.useUnit, item.usableYieldPercent), 0))} />
           <SummaryMetric label="Con historial de precios" value={String(state.ingredients.filter((item) => item.priceHistory.length > 0).length)} />
         </div>
         <p className="helper-text">
@@ -5840,7 +5865,7 @@ function RawMaterialPricesSheet({
                   <td>{ingredient.purchaseUnit}</td>
                   <td>{money.format(ingredient.purchasePrice)}</td>
                   <td>{ingredient.useUnit}</td>
-                  <td>{money.format(ingredient.usefulUnitCost)}</td>
+                  <td>{money.format(calculateUsefulUnitCost(ingredient.purchasePrice, ingredient.purchaseUnit, ingredient.useUnit, ingredient.usableYieldPercent))}</td>
                   <td>{percent.format(ingredient.usableYieldPercent / 100)}</td>
                   <td>{ingredient.lastPurchaseDate || '—'}</td>
                   <td>{previous ? money.format(previous.pricePurchase) : '—'}</td>

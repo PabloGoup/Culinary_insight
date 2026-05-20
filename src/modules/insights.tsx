@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Fragment } from 'react';
 import type { ReactNode } from 'react';
+import * as XLSX from 'xlsx-js-style';
+import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { AlertTriangle, BarChart3, Boxes, ClipboardList, Megaphone, Percent, Scale, Sparkles, Store, Target, TrendingDown, TrendingUp, Wallet } from 'lucide-react';
 import {
   Bar,
@@ -15,15 +17,904 @@ import {
   YAxis,
 } from 'recharts';
 import type { useLocalStore } from '../hooks/useLocalStore';
-import { money, percent } from '../lib/format';
-import { calculateDishCost, calculateProjectionRevenue, getDashboardMetrics, getLatestProjection, getMenuEngineering, getReportSnapshot, roundPriceForCustomer, simulateDishScenario } from '../services/costEngine';
+import { compactNumber, money, percent } from '../lib/format';
+import { calculateDishCost, calculateProjectionRevenue, calculateTotalMonthlyLaborCost, convertQuantity, getDashboardMetrics, getIngredientUsageForecast, getLatestProjection, getMenuEngineering, getMonthlyCostAmount, getReportSnapshot, roundPriceForCustomer, simulateDishScenario } from '../services/costEngine';
 
 type StoreState = ReturnType<typeof useLocalStore>['state'];
+
+function compactMoney(value: number) {
+  return `$${compactNumber(value)}`;
+}
 
 function parseNumericInput(value: string, fallback = 0) {
   if (value.trim() === '') return fallback;
   const parsed = Number(value.replace(',', '.'));
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function getEngineeringExportPrice(item: ReturnType<typeof getMenuEngineering>[number]) {
+  return item.dish.customerFacingPrice && item.dish.customerFacingPrice > 0 ? item.dish.customerFacingPrice : item.result.recommendedPrice;
+}
+
+type SheetCell = XLSX.CellObject & { s?: Record<string, unknown> };
+
+const borderStyle = {
+  top: { style: 'thin', color: { rgb: 'D9D9D9' } },
+  bottom: { style: 'thin', color: { rgb: 'D9D9D9' } },
+  left: { style: 'thin', color: { rgb: 'D9D9D9' } },
+  right: { style: 'thin', color: { rgb: 'D9D9D9' } },
+};
+
+function setCellStyle(worksheet: XLSX.WorkSheet, cellAddress: string, style: Record<string, unknown>) {
+  const cell = worksheet[cellAddress] as SheetCell | undefined;
+  if (!cell) return;
+  cell.s = { ...(cell.s ?? {}), ...style };
+}
+
+function setWorkbookCellFormat(worksheet: XLSX.WorkSheet, cellAddress: string, format: string) {
+  const cell = worksheet[cellAddress];
+  if (!cell) return;
+  cell.z = format;
+}
+
+function setSheetValue(worksheet: XLSX.WorkSheet, cellAddress: string, value: string | number, style?: Record<string, unknown>) {
+  worksheet[cellAddress] = {
+    t: typeof value === 'number' ? 'n' : 's',
+    v: value,
+    ...(style ? { s: style } : {}),
+  } as SheetCell;
+  const cell = XLSX.utils.decode_cell(cellAddress);
+  const currentRange = worksheet['!ref'] ? XLSX.utils.decode_range(worksheet['!ref']) : { s: cell, e: cell };
+  currentRange.s.r = Math.min(currentRange.s.r, cell.r);
+  currentRange.s.c = Math.min(currentRange.s.c, cell.c);
+  currentRange.e.r = Math.max(currentRange.e.r, cell.r);
+  currentRange.e.c = Math.max(currentRange.e.c, cell.c);
+  worksheet['!ref'] = XLSX.utils.encode_range(currentRange);
+}
+
+function getFoodCostStatus(foodCostPercent: number) {
+  if (foodCostPercent <= 0.25) return 'Correcto';
+  if (foodCostPercent <= 0.3) return 'Revisar';
+  return 'Alerta';
+}
+
+function getMbeStatus(mbePercent: number) {
+  if (mbePercent >= 0.75) return 'Correcto';
+  if (mbePercent >= 0.7) return 'Revisar';
+  return 'Alerta';
+}
+
+function describeFoodCostRisk(foodCostPercent: number) {
+  if (foodCostPercent <= 0.25) return `OK: ${percent.format(foodCostPercent)} de 25% max.`;
+  return `Sobre meta: ${percent.format(foodCostPercent)} > 25%.`;
+}
+
+function describeMbeProgress(mbePercent: number) {
+  if (mbePercent >= 0.75) return `OK: ${percent.format(mbePercent)} de 75% min.`;
+  return `Bajo meta: ${percent.format(mbePercent)} < 75%.`;
+}
+
+function describeShare(value: number, total: number, label: string) {
+  const share = total > 0 ? value / total : 0;
+  return `${percent.format(share)} del ${label}`;
+}
+
+function escapeXml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+type NativeChartSpec = {
+  sheetIndex: number;
+  title: string;
+  type: 'pie' | 'bar' | 'column';
+  categoriesRef: string;
+  valuesRef: string;
+  anchor: { fromCol: number; fromRow: number; toCol: number; toRow: number };
+};
+
+function getChartXml(spec: NativeChartSpec) {
+  const barDirection = spec.type === 'bar' ? 'bar' : 'col';
+  const plot =
+    spec.type === 'pie'
+      ? `<c:pieChart><c:varyColors val="1"/><c:ser><c:idx val="0"/><c:order val="0"/><c:cat><c:strRef><c:f>${escapeXml(spec.categoriesRef)}</c:f></c:strRef></c:cat><c:val><c:numRef><c:f>${escapeXml(spec.valuesRef)}</c:f></c:numRef></c:val></c:ser><c:firstSliceAng val="270"/></c:pieChart>`
+      : `<c:barChart><c:barDir val="${barDirection}"/><c:grouping val="clustered"/><c:varyColors val="1"/><c:ser><c:idx val="0"/><c:order val="0"/><c:cat><c:strRef><c:f>${escapeXml(spec.categoriesRef)}</c:f></c:strRef></c:cat><c:val><c:numRef><c:f>${escapeXml(spec.valuesRef)}</c:f></c:numRef></c:val></c:ser><c:axId val="123456"/><c:axId val="123457"/></c:barChart><c:catAx><c:axId val="123456"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="b"/><c:tickLblPos val="nextTo"/><c:crossAx val="123457"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/></c:catAx><c:valAx><c:axId val="123457"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="l"/><c:numFmt formatCode="$#,##0" sourceLinked="0"/><c:majorGridlines/><c:tickLblPos val="nextTo"/><c:crossAx val="123456"/><c:crosses val="autoZero"/></c:valAx>`;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><c:chart><c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="es-CL" sz="1200" b="1"/><a:t>${escapeXml(spec.title)}</a:t></a:r></a:p></c:rich></c:tx><c:layout/></c:title><c:autoTitleDeleted val="0"/><c:plotArea><c:layout/>${plot}</c:plotArea><c:legend><c:legendPos val="r"/><c:layout/></c:legend><c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart><c:printSettings><c:headerFooter/><c:pageMargins b="0.75" l="0.7" r="0.7" t="0.75" header="0.3" footer="0.3"/><c:pageSetup/></c:printSettings></c:chartSpace>`;
+}
+
+function getDrawingXml(chartId: number, spec: NativeChartSpec) {
+  const { fromCol, fromRow, toCol, toRow } = spec.anchor;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><xdr:twoCellAnchor><xdr:from><xdr:col>${fromCol}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${fromRow}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>${toCol}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${toRow}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:graphicFrame macro=""><xdr:nvGraphicFramePr><xdr:cNvPr id="${chartId}" name="Grafico ${chartId}"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rId1"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor></xdr:wsDr>`;
+}
+
+function injectNativeCharts(xlsxBytes: Uint8Array, specs: NativeChartSpec[]) {
+  const files = unzipSync(xlsxBytes);
+  const contentTypesPath = '[Content_Types].xml';
+  let contentTypes = strFromU8(files[contentTypesPath]);
+  const relNamespace = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+
+  specs.forEach((spec, index) => {
+    const chartId = index + 1;
+    const drawingId = index + 1;
+    const sheetPath = `xl/worksheets/sheet${spec.sheetIndex}.xml`;
+    const sheetRelPath = `xl/worksheets/_rels/sheet${spec.sheetIndex}.xml.rels`;
+    const drawingPath = `xl/drawings/drawing${drawingId}.xml`;
+    const drawingRelPath = `xl/drawings/_rels/drawing${drawingId}.xml.rels`;
+    const chartPath = `xl/charts/chart${chartId}.xml`;
+
+    files[chartPath] = strToU8(getChartXml(spec));
+    files[drawingPath] = strToU8(getDrawingXml(chartId, spec));
+    files[drawingRelPath] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${relNamespace}/chart" Target="../charts/chart${chartId}.xml"/></Relationships>`);
+
+    const existingRelXml = files[sheetRelPath] ? strFromU8(files[sheetRelPath]) : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`;
+    const relMatches = Array.from(existingRelXml.matchAll(/Id="rId(\d+)"/g));
+    const nextRelId = relMatches.reduce((max, match) => Math.max(max, Number(match[1])), 0) + 1;
+    files[sheetRelPath] = strToU8(existingRelXml.replace('</Relationships>', `<Relationship Id="rId${nextRelId}" Type="${relNamespace}/drawing" Target="../drawings/drawing${drawingId}.xml"/></Relationships>`));
+
+    let sheetXml = strFromU8(files[sheetPath]);
+    if (!sheetXml.includes('xmlns:r=')) {
+      sheetXml = sheetXml.replace('<worksheet ', `<worksheet xmlns:r="${relNamespace}" `);
+    }
+    const drawingNode = `<drawing r:id="rId${nextRelId}"/>`;
+    files[sheetPath] = strToU8(sheetXml.includes('</worksheet>') ? sheetXml.replace('</worksheet>', `${drawingNode}</worksheet>`) : sheetXml);
+
+    if (!contentTypes.includes(`/xl/charts/chart${chartId}.xml`)) {
+      contentTypes = contentTypes.replace('</Types>', `<Override PartName="/xl/charts/chart${chartId}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/><Override PartName="/xl/drawings/drawing${drawingId}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/></Types>`);
+    }
+  });
+
+  files[contentTypesPath] = strToU8(contentTypes);
+  return zipSync(files);
+}
+
+function downloadXlsx(workbook: XLSX.WorkBook, fileName: string, charts: NativeChartSpec[]) {
+  const raw = XLSX.write(workbook, { bookType: 'xlsx', type: 'array', compression: true }) as ArrayBuffer;
+  const enhanced = charts.length > 0 ? injectNativeCharts(new Uint8Array(raw), charts) : new Uint8Array(raw);
+  const blob = new Blob([enhanced], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function quoteSheetName(sheetName: string) {
+  return `'${sheetName.replace(/'/g, "''")}'`;
+}
+
+function accumulateReportRecipeIngredients(
+  state: StoreState,
+  recipeId: string,
+  multiplier: number,
+  bucket: Record<string, number>,
+) {
+  const recipe = state.baseRecipes.find((item) => item.id === recipeId);
+  if (!recipe) return;
+
+  recipe.items.forEach((item) => {
+    const ingredient = state.ingredients.find((entry) => entry.id === item.ingredientId);
+    if (!ingredient) return;
+    const quantityInPurchaseUnit = convertQuantity(item.quantity * multiplier, item.unit, ingredient.purchaseUnit);
+    bucket[ingredient.id] = (bucket[ingredient.id] ?? 0) + quantityInPurchaseUnit;
+  });
+}
+
+function accumulateReportDishIngredients(
+  state: StoreState,
+  dishId: string,
+  multiplier: number,
+  bucket: Record<string, number>,
+) {
+  const dish = state.dishes.find((item) => item.id === dishId);
+  if (!dish) return;
+
+  dish.directItems.forEach((component) => {
+    if (component.componentType === 'ingredient') {
+      const ingredient = state.ingredients.find((entry) => entry.id === component.refId);
+      if (!ingredient) return;
+      const quantityInPurchaseUnit = convertQuantity(component.quantity * multiplier, component.unit, ingredient.purchaseUnit);
+      bucket[ingredient.id] = (bucket[ingredient.id] ?? 0) + quantityInPurchaseUnit;
+      return;
+    }
+
+    if (component.componentType === 'baseRecipe') {
+      const recipe = state.baseRecipes.find((item) => item.id === component.refId);
+      if (!recipe) return;
+      const requestedInYieldUnit = convertQuantity(component.quantity, component.unit, recipe.yieldUnit);
+      accumulateReportRecipeIngredients(
+        state,
+        component.refId,
+        (requestedInYieldUnit / Math.max(recipe.yieldAmount, 0.001)) * multiplier,
+        bucket,
+      );
+    }
+  });
+}
+
+function getInventoryPlanningSnapshot(state: StoreState) {
+  const currentMonthKey = new Date().toISOString().slice(0, 7);
+  const metrics = getDashboardMetrics(state);
+  const currentMonthSalesValue = state.sales
+    .filter((sale) => sale.soldAt.slice(0, 7) === currentMonthKey)
+    .reduce(
+      (sum, sale) =>
+        sum +
+        sale.items.reduce((saleSum, item) => saleSum + item.quantity * item.unitPrice * (1 - item.discount), 0),
+      0,
+    );
+  const currentMonthUsage: Record<string, number> = {};
+
+  state.sales
+    .filter((sale) => sale.soldAt.slice(0, 7) === currentMonthKey)
+    .forEach((sale) => {
+      sale.items.forEach((item) => {
+        accumulateReportDishIngredients(state, item.dishId, item.quantity, currentMonthUsage);
+      });
+    });
+
+  const usedThisMonthValue = state.ingredients.reduce(
+    (sum, ingredient) => sum + (currentMonthUsage[ingredient.id] ?? 0) * ingredient.purchasePrice,
+    0,
+  );
+
+  const plannedProductionValue = state.ingredients.reduce((sum, ingredient) => {
+    const forecast = getIngredientUsageForecast(state, ingredient.id);
+    return sum + forecast.plannedUsage * ingredient.purchasePrice;
+  }, 0);
+  const salesVariationFactor = currentMonthSalesValue > 0
+    ? metrics.monthlyProjection / currentMonthSalesValue
+    : 1;
+  const nextMonthRequiredValue = usedThisMonthValue * salesVariationFactor + plannedProductionValue;
+
+  const inventoryValue = state.ingredients.reduce(
+    (sum, ingredient) => sum + ingredient.currentStock * ingredient.purchasePrice,
+    0,
+  );
+  const netAvailableForNextMonth = inventoryValue - nextMonthRequiredValue;
+  const purchaseGapForNextMonth = Math.max(nextMonthRequiredValue - inventoryValue, 0);
+
+  return {
+    currentMonthSalesValue,
+    usedThisMonthValue,
+    nextMonthRequiredValue,
+    inventoryValue,
+    netAvailableForNextMonth,
+    purchaseGapForNextMonth,
+  };
+}
+
+function exportMenuEngineeringExcel(state: StoreState) {
+  const items = getMenuEngineering(state);
+  const metrics = getDashboardMetrics(state);
+  const exportBusinessName = 'Delicias del Mar';
+  const headerRow = 11;
+  const firstDataRow = headerRow + 1;
+  const lastDataRow = firstDataRow + Math.max(items.length - 1, 0);
+  const totalUnits = items.reduce((sum, item) => sum + item.unitsSold, 0);
+  const realMonthRevenue = items.reduce((sum, item) => sum + item.unitsSold * getEngineeringExportPrice(item), 0);
+  const totalRevenue = realMonthRevenue;
+  const totalFoodCost = items.reduce((sum, item) => sum + item.unitsSold * (item.result.materialCost + item.result.wasteCost), 0);
+  const totalRealCost = items.reduce((sum, item) => sum + item.unitsSold * item.result.totalCost, 0);
+  const totalMbe = totalRevenue - totalFoodCost;
+  const totalContributionBeforeStructure = totalRevenue - totalRealCost;
+  const projectedRealProfitAfterVat = metrics.projectedRealProfitAfterVat;
+  const totalMonthlyStructure = state.business.fixedCostsMonthly +
+    state.indirectCosts.reduce((sum, item) => sum + getMonthlyCostAmount(item), 0) +
+    calculateTotalMonthlyLaborCost(state);
+  const projectedProfitBeforeVat = totalContributionBeforeStructure - totalMonthlyStructure;
+  const projectedVatDebit = metrics.projectedVatDebit;
+  const projectedVatCredit = metrics.projectedVatCredit;
+  const projectedVatPayable = metrics.projectedVatPayable;
+  const currentFoodCostPercent = totalRevenue > 0 ? totalFoodCost / totalRevenue : 0;
+  const currentMbePercent = totalRevenue > 0 ? totalMbe / totalRevenue : 0;
+  const currentContributionPercent = totalRevenue > 0 ? totalContributionBeforeStructure / totalRevenue : 0;
+  const projectedRealProfitAfterVatPercent = totalRevenue > 0 ? projectedRealProfitAfterVat / totalRevenue : 0;
+
+  const detailRows = items.map((item) => {
+    const finalPrice = getEngineeringExportPrice(item);
+    const foodCost = item.result.materialCost + item.result.wasteCost;
+    const categoryName = state.categories.find((category) => category.id === item.dish.categoryId)?.name ?? 'Sin categoria';
+    return {
+      categoryName,
+      finalPrice,
+      foodCost,
+      values: [
+        item.dish.name,
+        categoryName,
+        item.unitsSold,
+        0,
+        foodCost,
+        0,
+        finalPrice,
+        0,
+        0,
+        0,
+        item.result.totalCost,
+        0,
+        0,
+        item.quadrant,
+      ],
+    };
+  });
+
+  const worksheetData: Array<Array<string | number>> = [
+    [`Ingenieria de Menu - ${exportBusinessName}`, '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
+    ['Venta total corresponde a venta real del mes. La contribucion antes estructura no es utilidad final; utilidad post IVA descuenta estructura e IVA.', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
+    [],
+    ['Venta real del mes', 'Food cost total', 'Food cost %', 'MBE total', 'MBE %', 'Unidades vendidas', 'Costo total platos', 'Contribucion antes estructura', 'Contribucion %', 'Utilidad post IVA reporte', 'Utilidad post IVA %'],
+    [totalRevenue, totalFoodCost, currentFoodCostPercent, totalMbe, currentMbePercent, totalUnits, totalRealCost, totalContributionBeforeStructure, currentContributionPercent, projectedRealProfitAfterVat, projectedRealProfitAfterVatPercent],
+    [],
+    ['Puente utilidad real', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
+    ['Venta real del mes', 'Costo total platos', 'Contribucion antes estructura', 'Estructura mensual', 'Utilidad antes IVA', 'IVA debito', 'IVA credito', 'IVA neto a pagar', 'Utilidad real post IVA'],
+    [totalRevenue, totalRealCost, totalContributionBeforeStructure, totalMonthlyStructure, projectedProfitBeforeVat, projectedVatDebit, projectedVatCredit, projectedVatPayable, projectedRealProfitAfterVat],
+    [],
+    ['Detalle por plato', '', '', '', '', '', '', '', '', '', '', '', '', ''],
+    ['Receta', 'Categoria', 'U vendidas', '% pop', 'Food cost $', 'Food cost %', 'Precio cliente', 'MBE $', 'MBE %', 'Rendimiento MBE', 'Costo total $', 'Contribucion %', 'Ventas realizadas', 'Clasificacion'],
+    ...(detailRows.length > 0 ? detailRows.map((row) => row.values) : [['Sin platos registrados', 'Sin categoria', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 'Sin datos']]),
+  ];
+
+  const workbook = XLSX.utils.book_new();
+  const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
+  worksheet['!merges'] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 14 } },
+    { s: { r: 1, c: 0 }, e: { r: 1, c: 14 } },
+    { s: { r: 6, c: 0 }, e: { r: 6, c: 14 } },
+    { s: { r: 10, c: 0 }, e: { r: 10, c: 14 } },
+  ];
+  worksheet['!cols'] = [
+    { wch: 36 },
+    { wch: 18 },
+    { wch: 12 },
+    { wch: 10 },
+    { wch: 14 },
+    { wch: 12 },
+    { wch: 14 },
+    { wch: 14 },
+    { wch: 10 },
+    { wch: 15 },
+    { wch: 16 },
+    { wch: 14 },
+    { wch: 14 },
+    { wch: 16 },
+    { wch: 16 },
+    { wch: 14 },
+  ];
+  worksheet['!autofilter'] = { ref: `A${headerRow + 1}:N${Math.max(lastDataRow + 1, headerRow + 2)}` };
+
+  const titleStyle = {
+    font: { bold: true, color: { rgb: 'FFFFFF' }, sz: 18 },
+    fill: { fgColor: { rgb: '7A271F' } },
+    alignment: { horizontal: 'center', vertical: 'center' },
+  };
+  const subtitleStyle = {
+    font: { color: { rgb: '5F5F5F' } },
+    fill: { fgColor: { rgb: 'FFF4E6' } },
+  };
+  const darkHeaderStyle = {
+    font: { bold: true, color: { rgb: 'FFFFFF' } },
+    fill: { fgColor: { rgb: '2B2B2B' } },
+    alignment: { horizontal: 'center', vertical: 'center' },
+    border: borderStyle,
+  };
+  const sectionStyle = {
+    font: { bold: true, color: { rgb: 'FFFFFF' } },
+    fill: { fgColor: { rgb: '9D3A2F' } },
+    alignment: { horizontal: 'center', vertical: 'center' },
+  };
+  const kpiValueStyle = {
+    font: { bold: true, sz: 13 },
+    fill: { fgColor: { rgb: 'F6E7D6' } },
+    border: borderStyle,
+  };
+  const tableCellStyle = {
+    border: borderStyle,
+    alignment: { vertical: 'center' },
+  };
+  const percentOkStyle = {
+    ...tableCellStyle,
+    font: { bold: true, color: { rgb: '0B7A22' } },
+    fill: { fgColor: { rgb: 'EAF6E8' } },
+  };
+  const percentDangerStyle = {
+    ...tableCellStyle,
+    font: { bold: true, color: { rgb: '8A1C12' } },
+    fill: { fgColor: { rgb: 'FCE4DF' } },
+  };
+  const classOkStyle = {
+    ...tableCellStyle,
+    font: { bold: true, color: { rgb: '0B7A22' } },
+    fill: { fgColor: { rgb: 'DDF3DF' } },
+    alignment: { horizontal: 'center', vertical: 'center' },
+  };
+  const classWarnStyle = {
+    ...tableCellStyle,
+    font: { bold: true, color: { rgb: 'A24400' } },
+    fill: { fgColor: { rgb: 'FFF2CC' } },
+    alignment: { horizontal: 'center', vertical: 'center' },
+  };
+  const classDangerStyle = {
+    ...tableCellStyle,
+    font: { bold: true, color: { rgb: '8A1C12' } },
+    fill: { fgColor: { rgb: 'F7D7D2' } },
+    alignment: { horizontal: 'center', vertical: 'center' },
+  };
+  const chartExplanationStyle = {
+    font: { italic: true, color: { rgb: '5F5F5F' } },
+    fill: { fgColor: { rgb: 'FFF4E6' } },
+    alignment: { wrapText: true, vertical: 'top' },
+    border: borderStyle,
+  };
+
+  const appendStyledSheet = (
+    sheetName: string,
+    data: Array<Array<string | number>>,
+    widths: number[],
+    options: { filter?: boolean; moneyColumns?: number[]; percentColumns?: number[]; titleRows?: number[]; headerRows?: number[] } = {},
+  ) => {
+    const sheet = XLSX.utils.aoa_to_sheet(data);
+    sheet['!cols'] = widths.map((wch) => ({ wch }));
+    const lastCol = Math.max(...data.map((row) => row.length), 1) - 1;
+    if (options.filter && data.length > 1) {
+      sheet['!autofilter'] = { ref: `${XLSX.utils.encode_col(0)}1:${XLSX.utils.encode_col(lastCol)}${data.length}` };
+    }
+    data.forEach((row, rowIndex) => {
+      row.forEach((_, colIndex) => {
+        const address = XLSX.utils.encode_cell({ r: rowIndex, c: colIndex });
+        setCellStyle(sheet, address, rowIndex === 0 || options.headerRows?.includes(rowIndex) ? darkHeaderStyle : tableCellStyle);
+        if (options.moneyColumns?.includes(colIndex) && rowIndex > 0) setWorkbookCellFormat(sheet, address, '$#,##0');
+        if (options.percentColumns?.includes(colIndex) && rowIndex > 0) setWorkbookCellFormat(sheet, address, '0.0%');
+      });
+    });
+    options.titleRows?.forEach((rowIndex) => {
+      for (let colIndex = 0; colIndex <= lastCol; colIndex += 1) {
+        setCellStyle(sheet, XLSX.utils.encode_cell({ r: rowIndex, c: colIndex }), sectionStyle);
+      }
+    });
+    XLSX.utils.book_append_sheet(workbook, sheet, sheetName);
+    return sheet;
+  };
+
+  const categorySummary = Array.from(
+    detailRows.reduce((map, row, index) => {
+      const item = items[index];
+      const current = map.get(row.categoryName) ?? {
+        units: 0,
+        sales: 0,
+        foodCost: 0,
+        mbe: 0,
+        dishes: 0,
+      };
+      current.units += item.unitsSold;
+      current.sales += item.unitsSold * row.finalPrice;
+      current.foodCost += item.unitsSold * row.foodCost;
+      current.mbe += item.unitsSold * (row.finalPrice - row.foodCost);
+      current.dishes += 1;
+      map.set(row.categoryName, current);
+      return map;
+    }, new Map<string, { units: number; sales: number; foodCost: number; mbe: number; dishes: number }>()),
+  ).map(([category, values]) => {
+    const foodCostPercent = values.sales > 0 ? values.foodCost / values.sales : 0;
+    const mbePercent = values.sales > 0 ? values.mbe / values.sales : 0;
+    return [
+      category,
+      values.dishes,
+      values.units,
+      values.sales,
+      describeShare(values.sales, totalRevenue, 'total de ventas'),
+      values.foodCost,
+      foodCostPercent,
+      getFoodCostStatus(foodCostPercent),
+      values.mbe,
+      mbePercent,
+      getMbeStatus(mbePercent),
+    ];
+  });
+
+  const visualPanelSheet = appendStyledSheet('Panel Visual', [
+    [`Panel Visual - ${exportBusinessName}`, '', '', '', '', '', ''],
+    ['Indicador', 'Valor', 'Meta', 'Lectura visual', 'Estado', 'Que significa', 'Accion sugerida'],
+    ['Venta total', totalRevenue, 'Mayor es mejor', 'Base para medir food cost y MBE.', totalRevenue > 0 ? 'Con ventas' : 'Sin ventas', 'Venta valorizada con precio cliente actual.', 'Revisar ventas si aparece en cero.'],
+    ['Food cost %', currentFoodCostPercent, '<= 25%', describeFoodCostRisk(currentFoodCostPercent), currentFoodCostPercent <= 0.25 ? 'Correcto' : 'Alerta', 'Materia prima / precio cliente.', 'Si supera 25%, ajustar gramaje, rendimiento o precio.'],
+    ['MBE %', currentMbePercent, '>= 75%', describeMbeProgress(currentMbePercent), currentMbePercent >= 0.75 ? 'Correcto' : 'Alerta', 'Precio cliente menos food cost.', 'Debe mantenerse sobre 75%.'],
+    ['Utilidad real', totalRevenue - totalFoodCost, 'Mayor es mejor', describeShare(totalRevenue - totalFoodCost, totalRevenue, 'total de ventas'), totalRevenue > totalFoodCost ? 'Positiva' : 'Negativa', 'Venta menos food cost.', 'Corregir platos con MBE bajo.'],
+    [],
+    ['Ranking visual por plato', '', '', '', '', '', ''],
+    ['Plato', 'Categoria', 'U vendidas', 'Venta visual', 'Food cost %', 'MBE %', 'Clasificacion'],
+    ...items
+      .slice()
+      .sort((a, b) => b.unitsSold - a.unitsSold)
+      .map((item) => {
+        const row = detailRows[items.indexOf(item)];
+        const dishRevenue = item.unitsSold * row.finalPrice;
+        return [
+          item.dish.name,
+          row.categoryName,
+          item.unitsSold,
+          describeShare(dishRevenue, totalRevenue, 'total de ventas'),
+          row.finalPrice > 0 ? row.foodCost / row.finalPrice : 0,
+          row.finalPrice > 0 ? (row.finalPrice - row.foodCost) / row.finalPrice : 0,
+          item.quadrant,
+        ];
+      }),
+  ], [34, 18, 13, 24, 14, 36, 42], { titleRows: [0, 7], headerRows: [1, 8] });
+  ['B3', 'B6'].forEach((cellAddress) => setWorkbookCellFormat(visualPanelSheet, cellAddress, '$#,##0'));
+  ['B4', 'B5'].forEach((cellAddress) => setWorkbookCellFormat(visualPanelSheet, cellAddress, '0.0%'));
+  for (let row = 2; row <= 5; row += 1) {
+    const status = String(visualPanelSheet[XLSX.utils.encode_cell({ r: row, c: 4 })]?.v ?? '');
+    setCellStyle(visualPanelSheet, XLSX.utils.encode_cell({ r: row, c: 4 }), status === 'Alerta' || status === 'Negativa' ? classDangerStyle : classOkStyle);
+  }
+  for (let row = 9; row < 9 + items.length; row += 1) {
+    const foodCostCell = visualPanelSheet[XLSX.utils.encode_cell({ r: row, c: 4 })];
+    const mbeCell = visualPanelSheet[XLSX.utils.encode_cell({ r: row, c: 5 })];
+    const classCell = visualPanelSheet[XLSX.utils.encode_cell({ r: row, c: 6 })];
+    const foodCostValue = Number(foodCostCell?.v ?? 0);
+    const mbeValue = Number(mbeCell?.v ?? 0);
+    const classValue = String(classCell?.v ?? '');
+    setWorkbookCellFormat(visualPanelSheet, XLSX.utils.encode_cell({ r: row, c: 4 }), '0.0%');
+    setWorkbookCellFormat(visualPanelSheet, XLSX.utils.encode_cell({ r: row, c: 5 }), '0.0%');
+    setCellStyle(visualPanelSheet, XLSX.utils.encode_cell({ r: row, c: 4 }), foodCostValue > 0.25 ? percentDangerStyle : percentOkStyle);
+    setCellStyle(visualPanelSheet, XLSX.utils.encode_cell({ r: row, c: 5 }), mbeValue < 0.75 ? percentDangerStyle : percentOkStyle);
+    setCellStyle(visualPanelSheet, XLSX.utils.encode_cell({ r: row, c: 6 }), classValue === 'Estrella' ? classOkStyle : classValue === 'Ajustar' ? classDangerStyle : classWarnStyle);
+  }
+
+
+  const executiveSheet = appendStyledSheet('Resumen Ejecutivo', [
+    ['Indicador', 'Valor', 'Meta', 'Lectura didactica', 'Estado', 'Lectura'],
+    ['Venta valorizada precio carta', totalRevenue, 'Mayor es mejor', 'Base de comparacion para todo el analisis.', totalRevenue > 0 ? 'Con ventas' : 'Sin ventas', 'Unidades reales vendidas valorizadas al precio cliente actual.'],
+    ['Food cost total', totalFoodCost, 'Controlado', describeShare(totalFoodCost, totalRevenue, 'total de ventas'), getFoodCostStatus(currentFoodCostPercent), 'Materia prima total de recetas base + receta final.'],
+    ['Food cost %', currentFoodCostPercent, '<= 25%', describeFoodCostRisk(currentFoodCostPercent), getFoodCostStatus(currentFoodCostPercent), currentFoodCostPercent <= 0.25 ? 'Dentro del maximo 25%.' : 'Sobre el maximo 25%, requiere ajuste.'],
+    ['MBE total', totalMbe, 'Mayor es mejor', describeShare(totalMbe, totalRevenue, 'total de ventas'), totalMbe > 0 ? 'Positivo' : 'Negativo', 'Precio cliente menos food cost.'],
+    ['MBE %', currentMbePercent, '>= 75%', describeMbeProgress(currentMbePercent), getMbeStatus(currentMbePercent), currentMbePercent >= 0.75 ? 'Cumple minimo 75%.' : 'Bajo minimo 75%, revisar precios/costos.'],
+    ['Unidades vendidas', totalUnits, 'Mayor es mejor', `${totalUnits} unidades reales registradas.`, totalUnits > 0 ? 'Con ventas' : 'Sin ventas', 'Suma de unidades reales por plato.'],
+    ['Platos analizados', items.length, 'Cobertura menu', `${items.length} platos finales incluidos.`, items.length > 0 ? 'Con datos' : 'Sin datos', 'Platos finales incluidos en ingenieria de menu.'],
+  ], [34, 18, 16, 24, 14, 58]);
+  ['B2', 'B3', 'B5'].forEach((cellAddress) => setWorkbookCellFormat(executiveSheet, cellAddress, '$#,##0'));
+  ['B4', 'B6'].forEach((cellAddress) => setWorkbookCellFormat(executiveSheet, cellAddress, '0.0%'));
+  for (let row = 2; row <= 8; row += 1) {
+    const status = String(executiveSheet[`E${row}`]?.v ?? '');
+    setCellStyle(executiveSheet, `E${row}`, status === 'Alerta' || status === 'Negativo' ? classDangerStyle : status === 'Revisar' ? classWarnStyle : classOkStyle);
+  }
+
+  const categorySheet = appendStyledSheet('Resumen Categorias', [
+    ['Categoria', 'Platos', 'U vendidas', 'Cifra negocio', 'Peso ventas', 'Food cost total', 'Food cost %', 'Estado FC', 'MBE total', 'MBE %', 'Estado MBE'],
+    ...categorySummary,
+  ], [22, 10, 12, 16, 24, 16, 12, 12, 16, 12, 12], { filter: true, moneyColumns: [3, 5, 8], percentColumns: [6, 9] });
+  for (let row = 2; row <= categorySummary.length + 1; row += 1) {
+    const fcStatus = String(categorySheet[`H${row}`]?.v ?? '');
+    const mbeStatus = String(categorySheet[`K${row}`]?.v ?? '');
+    setCellStyle(categorySheet, `H${row}`, fcStatus === 'Alerta' ? classDangerStyle : fcStatus === 'Revisar' ? classWarnStyle : classOkStyle);
+    setCellStyle(categorySheet, `K${row}`, mbeStatus === 'Alerta' ? classDangerStyle : mbeStatus === 'Revisar' ? classWarnStyle : classOkStyle);
+  }
+
+
+  const costSheet = appendStyledSheet('Costos por Plato', [
+    ['Plato', 'Categoria', 'Materia prima neta', 'Merma rendimiento', 'Food cost total', 'Lectura FC', 'Recetas base', 'Packaging', 'MO final', 'Indirectos', 'Costo total', 'Precio cliente', 'Food cost %', 'Estado FC', 'MBE %', 'Estado MBE', 'Margen real %'],
+    ...items.map((item) => {
+      const row = detailRows[items.indexOf(item)];
+      const finalPrice = row.finalPrice;
+      const foodCost = row.foodCost;
+      const yieldWaste = item.result.yieldWasteCost;
+      const foodCostPercent = finalPrice > 0 ? foodCost / finalPrice : 0;
+      const mbePercent = finalPrice > 0 ? (finalPrice - foodCost) / finalPrice : 0;
+      return [
+        item.dish.name,
+        row.categoryName,
+        Math.max(item.result.materialCost - yieldWaste, 0),
+        yieldWaste,
+        foodCost,
+        describeFoodCostRisk(foodCostPercent),
+        item.result.baseRecipeCost,
+        item.result.packagingCost,
+        item.result.laborCost,
+        item.result.indirectCost,
+        item.result.totalCost,
+        finalPrice,
+        foodCostPercent,
+        getFoodCostStatus(foodCostPercent),
+        mbePercent,
+        getMbeStatus(mbePercent),
+        finalPrice > 0 ? (finalPrice - item.result.totalCost) / finalPrice : 0,
+      ];
+    }),
+  ], [34, 18, 16, 16, 16, 20, 14, 12, 12, 12, 14, 14, 12, 12, 12, 12, 12], { filter: true, moneyColumns: [2, 3, 4, 6, 7, 8, 9, 10, 11], percentColumns: [12, 14, 16] });
+  for (let row = 2; row <= items.length + 1; row += 1) {
+    const fcStatus = String(costSheet[`N${row}`]?.v ?? '');
+    const mbeStatus = String(costSheet[`P${row}`]?.v ?? '');
+    setCellStyle(costSheet, `N${row}`, fcStatus === 'Alerta' ? classDangerStyle : fcStatus === 'Revisar' ? classWarnStyle : classOkStyle);
+    setCellStyle(costSheet, `P${row}`, mbeStatus === 'Alerta' ? classDangerStyle : mbeStatus === 'Revisar' ? classWarnStyle : classOkStyle);
+  }
+  setSheetValue(
+    costSheet,
+    `A${items.length + 26}`,
+    'Lectura del grafico: compara el costo total por plato. Los platos con barras mas largas consumen mas recursos y deben auditarse primero en receta, rendimiento y mano de obra.',
+    chartExplanationStyle,
+  );
+
+  const salesRows = state.sales.flatMap((sale) =>
+    sale.items.flatMap((saleItem) => {
+      const dish = state.dishes.find((candidate) => candidate.id === saleItem.dishId);
+      if (!dish) return [];
+      const result = calculateDishCost(state, dish);
+      const finalPrice = dish.customerFacingPrice && dish.customerFacingPrice > 0 ? dish.customerFacingPrice : result.recommendedPrice;
+      const foodCost = result.materialCost + result.wasteCost;
+      const categoryName = state.categories.find((category) => category.id === dish.categoryId)?.name ?? 'Sin categoria';
+      const foodCostPercent = finalPrice > 0 ? foodCost / finalPrice : 0;
+      const mbePercent = finalPrice > 0 ? (finalPrice - foodCost) / finalPrice : 0;
+      return [[
+        sale.soldAt,
+        sale.channel,
+        dish.name,
+        categoryName,
+        saleItem.quantity,
+        saleItem.unitPrice,
+        finalPrice,
+        saleItem.quantity * finalPrice,
+        saleItem.quantity * foodCost,
+        saleItem.quantity * (finalPrice - foodCost),
+        describeShare(saleItem.quantity * finalPrice, totalRevenue, 'total de ventas'),
+        foodCostPercent,
+        getFoodCostStatus(foodCostPercent),
+        mbePercent,
+        getMbeStatus(mbePercent),
+      ]];
+    }),
+  );
+  const salesSheet = appendStyledSheet('Ventas Valorizadas', [
+    ['Fecha', 'Canal', 'Plato', 'Categoria', 'U vendidas', 'Precio historico', 'Precio carta actual', 'Venta valorizada', 'Food cost total', 'MBE total', 'Peso venta', 'Food cost %', 'Estado FC', 'MBE %', 'Estado MBE'],
+    ...salesRows,
+  ], [13, 14, 34, 18, 12, 15, 17, 17, 16, 16, 22, 12, 12, 12, 12], { filter: true, moneyColumns: [5, 6, 7, 8, 9], percentColumns: [11, 13] });
+  for (let row = 2; row <= salesRows.length + 1; row += 1) {
+    const fcStatus = String(salesSheet[`M${row}`]?.v ?? '');
+    const mbeStatus = String(salesSheet[`O${row}`]?.v ?? '');
+    setCellStyle(salesSheet, `M${row}`, fcStatus === 'Alerta' ? classDangerStyle : fcStatus === 'Revisar' ? classWarnStyle : classOkStyle);
+    setCellStyle(salesSheet, `O${row}`, mbeStatus === 'Alerta' ? classDangerStyle : mbeStatus === 'Revisar' ? classWarnStyle : classOkStyle);
+  }
+  setSheetValue(
+    salesSheet,
+    `A${salesRows.length + 24}`,
+    'Lectura del grafico: compara la venta valorizada por canal. Sirve para decidir donde enfocar promociones, dotacion y compras segun el canal que genera mas venta.',
+    chartExplanationStyle,
+  );
+  const channelSales = Array.from(
+    state.sales.reduce((map, sale) => {
+      const saleTotal = sale.items.reduce((sum, saleItem) => {
+        const dish = state.dishes.find((candidate) => candidate.id === saleItem.dishId);
+        if (!dish) return sum;
+        const result = calculateDishCost(state, dish);
+        const finalPrice = dish.customerFacingPrice && dish.customerFacingPrice > 0 ? dish.customerFacingPrice : result.recommendedPrice;
+        return sum + saleItem.quantity * finalPrice;
+      }, 0);
+      map.set(sale.channel, (map.get(sale.channel) ?? 0) + saleTotal);
+      return map;
+    }, new Map<string, number>()),
+  ).map(([label, value]) => ({ label, value }));
+
+  const componentSheetRows: Array<Array<string | number>> = [];
+  const componentTitleRows: number[] = [];
+  const componentHeaderRows: number[] = [];
+
+  items.forEach((item) => {
+    const row = detailRows[items.indexOf(item)];
+    componentTitleRows.push(componentSheetRows.length);
+    componentSheetRows.push([`Plato: ${item.dish.name}`, '', '', '', '', '', '', '', '', '', '', '']);
+    componentSheetRows.push([
+      'Categoria',
+      row.categoryName,
+      'Precio cliente',
+      money.format(row.finalPrice),
+      'Food cost',
+      money.format(row.foodCost),
+      'Food cost %',
+      percent.format(row.finalPrice > 0 ? row.foodCost / row.finalPrice : 0),
+      'MBE %',
+      percent.format(row.finalPrice > 0 ? (row.finalPrice - row.foodCost) / row.finalPrice : 0),
+      '',
+      '',
+    ]);
+    componentHeaderRows.push(componentSheetRows.length);
+    componentSheetRows.push(['Tipo componente', 'Componente', 'Cantidad', 'Unidad', 'Costo MP bruto', 'Ajuste rendimiento', 'Costo unitario util', 'Costo linea final', 'Receta base origen', 'Peso en costo', 'Lectura', '']);
+    item.result.componentLines.forEach((line) => {
+      const grossLineCost = Math.max(line.lineCost - line.yieldWasteCost, 0);
+      componentSheetRows.push([
+        line.componentType === 'baseRecipe' ? 'Receta base' : line.componentType === 'packaging' ? 'Packaging' : 'Ingrediente directo',
+        line.componentName,
+        line.quantity,
+        line.unit,
+        grossLineCost,
+        line.yieldWasteCost,
+        line.unitCost,
+        line.lineCost,
+        '',
+        describeShare(line.lineCost, item.result.totalCost, 'costo total del plato'),
+        line.yieldWasteCost > 0 ? 'Costo linea final = MP bruto + ajuste por rendimiento' : 'Costo linea final sin ajuste por rendimiento',
+        '',
+      ]);
+      (line.nestedLines ?? []).forEach((nestedLine) => {
+        const nestedGrossLineCost = Math.max(nestedLine.lineCost - nestedLine.yieldWasteCost, 0);
+        componentSheetRows.push([
+        'Ingrediente dentro receta base',
+        nestedLine.ingredientName,
+        nestedLine.quantity,
+        nestedLine.unit,
+        nestedGrossLineCost,
+        nestedLine.yieldWasteCost,
+        nestedLine.usefulUnitCost,
+        nestedLine.lineCost,
+        line.componentName,
+          describeShare(nestedLine.lineCost, item.result.totalCost, 'costo total del plato'),
+          nestedLine.yieldWasteCost > 0 ? 'Costo linea final = MP bruto + ajuste por rendimiento' : 'Costo linea final sin ajuste por rendimiento',
+          '',
+        ]);
+      });
+    });
+    componentSheetRows.push([]);
+  });
+  appendStyledSheet('Componentes y Recetas', [
+    ['Componentes y Recetas por Plato', '', '', '', '', '', '', '', '', '', '', ''],
+    ['Cada plato esta separado en su propia tabla. El costo linea final ya incluye el rendimiento: costo MP bruto + ajuste rendimiento. No se suma dos veces.', '', '', '', '', '', '', '', '', '', '', ''],
+    [],
+    ...componentSheetRows,
+  ], [28, 32, 12, 11, 16, 18, 16, 16, 28, 20, 44, 4], {
+    titleRows: [0, ...componentTitleRows.map((rowIndex) => rowIndex + 3)],
+    headerRows: componentHeaderRows.map((rowIndex) => rowIndex + 3),
+    moneyColumns: [4, 5, 6, 7],
+  });
+
+  const rulesSheet = appendStyledSheet('Reglas y Validaciones', [
+    ['Regla', 'Criterio', 'Semaforo', 'Accion esperada', 'Lectura didactica'],
+    ['Food cost', 'Food cost % <= 25%', getFoodCostStatus(currentFoodCostPercent), 'Si supera 25%, ajustar receta, gramaje, rendimiento o precio.', describeFoodCostRisk(currentFoodCostPercent)],
+    ['MBE', 'MBE % >= 75%', getMbeStatus(currentMbePercent), 'Si baja de 75%, revisar precio cliente o materia prima.', describeMbeProgress(currentMbePercent)],
+    ['Clasificacion Estrella', 'MBE alto y popularidad alta', 'Correcto', 'Mantener posicion y proteger calidad.', 'Alta rentabilidad + alta venta'],
+    ['Clasificacion Vaca', 'MBE bajo y popularidad alta', 'Revisar', 'Subir precio o bajar food cost sin perder venta.', 'Alta venta + rentabilidad ajustada'],
+    ['Clasificacion Enigma', 'MBE alto y popularidad baja', 'Revisar', 'Mejorar visibilidad y venta sugerida.', 'Buena rentabilidad + baja venta'],
+    ['Clasificacion Ajustar', 'MBE bajo y popularidad baja', 'Alerta', 'No impulsar hasta corregir rentabilidad.', 'Baja venta + baja rentabilidad'],
+    ['Precio usado', 'Precio cliente actual', 'Correcto', 'Las ventas se valorizan al precio carta actual para alinear dashboard y Excel.', 'Evita diferencias por precios antiguos'],
+    ['Ajuste rendimiento', 'Costo util - costo bruto de compra', 'Correcto', 'Es un desglose explicativo. El costo linea final ya incluye este ajuste; no se vuelve a sumar en otra columna.', 'Ej: $9.990/kg, 82% rendimiento, 180 g = $1.798 bruto + $395 ajuste = $2.193 final'],
+  ], [28, 34, 14, 70, 32], { filter: true });
+  for (let row = 2; row <= 9; row += 1) {
+    const status = String(rulesSheet[`C${row}`]?.v ?? '');
+    setCellStyle(rulesSheet, `C${row}`, status === 'Alerta' ? classDangerStyle : status === 'Revisar' ? classWarnStyle : classOkStyle);
+  }
+
+  appendStyledSheet('Datos para Graficos', [
+    ['Datos limpios para crear graficos reales en Excel', '', '', '', '', ''],
+    ['Uso recomendado', 'Selecciona cada bloque y usa Insertar > Grafico. Estos datos evitan dibujos falsos con celdas.', '', '', '', ''],
+    [],
+    ['Grafico sugerido: Dona o circular', 'Valor', 'Lectura', '', '', ''],
+    ['Food cost', totalFoodCost, describeFoodCostRisk(currentFoodCostPercent), '', '', ''],
+    ['MBE', totalMbe, describeMbeProgress(currentMbePercent), '', '', ''],
+    [],
+    ['Grafico sugerido: Columnas por categoria', 'Venta', 'Food cost', 'MBE', 'Food cost %', 'MBE %'],
+    ...categorySummary.map((row) => [row[0], row[3], row[5], row[8], row[6], row[9]]),
+    [],
+    ['Grafico sugerido: Dispersion por plato', 'Food cost %', 'MBE %', 'Unidades vendidas', 'Clasificacion', 'Categoria'],
+    ...items.map((item) => {
+      const row = detailRows[items.indexOf(item)];
+      const foodCostPercent = row.finalPrice > 0 ? row.foodCost / row.finalPrice : 0;
+      const mbePercent = row.finalPrice > 0 ? (row.finalPrice - row.foodCost) / row.finalPrice : 0;
+      return [item.dish.name, foodCostPercent, mbePercent, item.unitsSold, item.quadrant, row.categoryName];
+    }),
+    [],
+    ['Grafico sugerido: Columnas por canal', 'Venta valorizada', '', '', '', ''],
+    ...channelSales.map((row) => [row.label, row.value, '', '', '', '']),
+    [],
+    ['Grafico sugerido: Barras horizontales por plato', 'Costo total', 'Food cost', 'Precio cliente', 'MBE', 'Unidades'],
+    ...items.map((item) => {
+      const row = detailRows[items.indexOf(item)];
+      return [item.dish.name, item.result.totalCost, row.foodCost, row.finalPrice, row.finalPrice - row.foodCost, item.unitsSold];
+    }),
+  ], [42, 18, 18, 18, 16, 18], {
+    titleRows: [0, 3, 7, 9 + categorySummary.length, 11 + categorySummary.length + items.length, 13 + categorySummary.length + items.length + channelSales.length],
+    headerRows: [3, 7, 9 + categorySummary.length, 11 + categorySummary.length + items.length, 13 + categorySummary.length + items.length + channelSales.length],
+  });
+
+  setCellStyle(worksheet, 'A1', titleStyle);
+  setCellStyle(worksheet, 'A2', subtitleStyle);
+  for (let col = 0; col < 11; col += 1) {
+    setCellStyle(worksheet, XLSX.utils.encode_cell({ r: 3, c: col }), darkHeaderStyle);
+    setCellStyle(worksheet, XLSX.utils.encode_cell({ r: 4, c: col }), col === 2 || col === 4 || col === 8 || col === 10 ? {
+      ...kpiValueStyle,
+      font: { bold: true, sz: 13, color: { rgb: (col === 2 ? currentFoodCostPercent <= 0.25 : col === 4 ? currentMbePercent >= 0.75 : col === 8 ? currentContributionPercent > 0 : projectedRealProfitAfterVatPercent > 0) ? '0B7A22' : '8A1C12' } },
+      fill: { fgColor: { rgb: (col === 2 ? currentFoodCostPercent <= 0.25 : col === 4 ? currentMbePercent >= 0.75 : col === 8 ? currentContributionPercent > 0 : projectedRealProfitAfterVatPercent > 0) ? 'DDF3DF' : 'F7D7D2' } },
+    } : kpiValueStyle);
+  }
+  setCellStyle(worksheet, 'A7', sectionStyle);
+  setCellStyle(worksheet, 'A11', sectionStyle);
+  for (let col = 0; col < 9; col += 1) {
+    setCellStyle(worksheet, XLSX.utils.encode_cell({ r: 7, c: col }), darkHeaderStyle);
+    const valueAddress = XLSX.utils.encode_cell({ r: 8, c: col });
+    const isPositiveResult = col === 2 || col === 4 || col === 8;
+    const isCostOrTax = col === 1 || col === 3 || col === 5 || col === 7;
+    setCellStyle(
+      worksheet,
+      valueAddress,
+      isPositiveResult
+          ? percentOkStyle
+          : isCostOrTax
+            ? percentDangerStyle
+            : kpiValueStyle,
+    );
+  }
+  for (let col = 0; col < 14; col += 1) {
+    setCellStyle(worksheet, XLSX.utils.encode_cell({ r: headerRow, c: col }), darkHeaderStyle);
+  }
+
+  detailRows.forEach((_, index) => {
+    const excelRow = firstDataRow + index + 1;
+    worksheet[`D${excelRow}`] = { t: 'n', f: `IF(SUM($C$${firstDataRow + 1}:$C$${lastDataRow + 1})=0,0,C${excelRow}/SUM($C$${firstDataRow + 1}:$C$${lastDataRow + 1}))`, z: '0.0%' };
+    worksheet[`F${excelRow}`] = { t: 'n', f: `IF(G${excelRow}=0,0,E${excelRow}/G${excelRow})`, z: '0.0%' };
+    worksheet[`H${excelRow}`] = { t: 'n', f: `G${excelRow}-E${excelRow}`, z: '$#,##0' };
+    worksheet[`I${excelRow}`] = { t: 'n', f: `IF(G${excelRow}=0,0,H${excelRow}/G${excelRow})`, z: '0.0%' };
+    worksheet[`J${excelRow}`] = { t: 'n', f: `C${excelRow}*H${excelRow}`, z: '$#,##0' };
+    worksheet[`L${excelRow}`] = { t: 'n', f: `IF(G${excelRow}=0,0,(G${excelRow}-K${excelRow})/G${excelRow})`, z: '0.0%' };
+    worksheet[`M${excelRow}`] = { t: 'n', f: `C${excelRow}*G${excelRow}`, z: '$#,##0' };
+  });
+
+  ['A5', 'B5', 'D5', 'G5', 'H5', 'J5'].forEach((cellAddress) => {
+    if (worksheet[cellAddress]) worksheet[cellAddress].z = '$#,##0';
+  });
+  ['C5', 'E5', 'I5', 'K5'].forEach((cellAddress) => {
+    if (worksheet[cellAddress]) worksheet[cellAddress].z = '0.0%';
+  });
+  ['A9', 'B9', 'C9', 'D9', 'E9', 'F9', 'G9', 'H9', 'I9'].forEach((cellAddress) => {
+    if (worksheet[cellAddress]) worksheet[cellAddress].z = '$#,##0';
+  });
+  for (let row = firstDataRow + 1; row <= lastDataRow + 1; row += 1) {
+    for (let col = 0; col < 14; col += 1) {
+      setCellStyle(worksheet, XLSX.utils.encode_cell({ r: row - 1, c: col }), tableCellStyle);
+    }
+    ['D', 'F', 'I', 'L'].forEach((column) => {
+      const cell = worksheet[`${column}${row}`];
+      if (cell) cell.z = '0.0%';
+    });
+    ['E', 'G', 'H', 'J', 'K', 'M'].forEach((column) => {
+      const cell = worksheet[`${column}${row}`];
+      if (cell) cell.z = '$#,##0';
+    });
+    const foodCostPercent = Number(worksheet[`F${row}`]?.v ?? detailRows[row - firstDataRow - 1]?.foodCost / Math.max(detailRows[row - firstDataRow - 1]?.finalPrice ?? 0, 1));
+    setCellStyle(worksheet, `F${row}`, foodCostPercent > 0.25 ? percentDangerStyle : percentOkStyle);
+    const mbePercent = ((detailRows[row - firstDataRow - 1]?.finalPrice ?? 0) - (detailRows[row - firstDataRow - 1]?.foodCost ?? 0)) / Math.max(detailRows[row - firstDataRow - 1]?.finalPrice ?? 0, 1);
+    setCellStyle(worksheet, `I${row}`, mbePercent < 0.75 ? percentDangerStyle : percentOkStyle);
+    const realMarginPercent = ((detailRows[row - firstDataRow - 1]?.finalPrice ?? 0) - (items[row - firstDataRow - 1]?.result.totalCost ?? 0)) / Math.max(detailRows[row - firstDataRow - 1]?.finalPrice ?? 0, 1);
+    setCellStyle(worksheet, `L${row}`, realMarginPercent < 0 ? percentDangerStyle : percentOkStyle);
+    const classValue = String(worksheet[`N${row}`]?.v ?? '');
+    setCellStyle(worksheet, `N${row}`, classValue === 'Estrella' ? classOkStyle : classValue === 'Ajustar' ? classDangerStyle : classWarnStyle);
+  }
+
+  const utilityNoteRow = lastDataRow + 4;
+  worksheet['!merges'] = [
+    ...(worksheet['!merges'] ?? []),
+    { s: { r: utilityNoteRow - 1, c: 0 }, e: { r: utilityNoteRow - 1, c: 13 } },
+  ];
+  setSheetValue(
+    worksheet,
+    `A${utilityNoteRow}`,
+    'Utilidad real = contribucion antes estructura - estructura mensual - IVA neto. La contribucion antes estructura no es utilidad final.',
+    chartExplanationStyle,
+  );
+
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Ingenieria Menu');
+
+  const costSheetName = quoteSheetName('Costos por Plato');
+  const chartSpecs: NativeChartSpec[] = [
+ 
+    {
+      sheetIndex: 4,
+      title: 'Costo total por plato',
+      type: 'bar',
+      categoriesRef: `${costSheetName}!$A$2:$A$${items.length + 1}`,
+      valuesRef: `${costSheetName}!$K$2:$K$${items.length + 1}`,
+      anchor: { fromCol: 0, fromRow: items.length + 5, toCol: 10, toRow: items.length + 25 },
+    },
+  ];
+  downloadXlsx(workbook, `ingenieria-menu-delicias-del-mar-${new Date().toISOString().slice(0, 10)}.xlsx`, chartSpecs);
 }
 
 export function DashboardModule({ state }: { state: StoreState }) {
@@ -37,16 +928,18 @@ export function DashboardModule({ state }: { state: StoreState }) {
     name: item.dish.name,
     margen: Number((item.result.netMarginPercent * 100).toFixed(1)),
   }));
+  const realProfit = metrics.totalSales - metrics.totalCosts;
 
   return (
     <section className="content-stack">
       <div className="kpi-grid">
-        <KpiCard title="Ventas reales brutas" value={money.format(metrics.totalSales)} icon={TrendingUp} />
-        <KpiCard title="Costos reales" value={money.format(metrics.totalCosts)} icon={Wallet} />
+        <KpiCard title="Ventas reales brutas" value={compactMoney(metrics.totalSales)} icon={TrendingUp} />
+        <KpiCard title="Costos totales" value={compactMoney(metrics.totalCosts)} icon={Wallet} />
         <KpiCard title="Food cost real" value={percent.format(metrics.foodCostPercent)} icon={Percent} />
-        <KpiCard title="Margen bruto real" value={percent.format(metrics.grossMarginPercent)} icon={BarChart3} />
-        <KpiCard title="Utilidad real post IVA" value={money.format(metrics.projectedRealProfitAfterVat)} icon={Target} />
-        <KpiCard title="Proyeccion mensual bruta" value={money.format(metrics.monthlyProjection)} icon={ClipboardList} />
+        <KpiCard title="Margen bruto esperado MBE" value={percent.format(metrics.grossMarginPercent)} icon={BarChart3} />
+        <KpiCard title="Contribucion antes estructura" value={compactMoney(realProfit)} icon={Target} />
+        <KpiCard title="Utilidad real estimada" value={compactMoney(metrics.estimatedProfit)} icon={Wallet} />
+        <KpiCard title="Proyeccion mensual bruta" value={compactMoney(metrics.monthlyProjection)} icon={ClipboardList} />
       </div>
 
       <div className="dashboard-grid">
@@ -117,14 +1010,24 @@ export function AnalyticsModule({ state }: { state: StoreState }) {
     <section className="content-stack">
       <div className="dashboard-grid">
         <section className="panel wide">
-          <PanelHeader title="Ingenieria de menu" />
+          <PanelHeader
+            title="Ingenieria de menu"
+            action={(
+              <button className="secondary-button compact" type="button" onClick={() => exportMenuEngineeringExcel(state)}>
+                <ClipboardList size={16} /> Exportar Excel
+              </button>
+            )}
+          />
           <DataTable
-            headers={['Plato', 'Unidades', 'Contribucion', 'Clasificacion', 'Accion sugerida']}
+            headers={['Plato', 'Unidades', 'Food cost', 'MBE $', 'MBE %', 'Contribucion MBE total', 'Clasificacion', 'Accion sugerida']}
             rows={items.map((item) => [
               item.dish.name,
               String(item.unitsSold),
+              percent.format(item.result.foodCostPercent),
+              money.format(item.result.mbeAmount),
+              percent.format(item.result.mbePercent),
               money.format(item.contribution),
-              <StatusBadge key={`${item.dish.id}-q`} tone={item.quadrant === 'Estrella' ? 'ok' : item.quadrant === 'Perro' ? 'danger' : 'warning'} text={item.quadrant} />,
+              <StatusBadge key={`${item.dish.id}-q`} tone={item.quadrant === 'Estrella' ? 'ok' : item.quadrant === 'Ajustar' ? 'danger' : 'warning'} text={item.quadrant} />,
               item.recommendedAction,
             ])}
           />
@@ -698,8 +1601,8 @@ export function DishComparisonModule({ state }: { state: StoreState }) {
           render: (item: typeof selectedResults[number]) => money.format(item.result.materialCost),
         },
         {
-          label: 'Merma aplicada',
-          render: (item: typeof selectedResults[number]) => money.format(item.result.wasteCost),
+          label: 'Merma por rendimiento',
+          render: (item: typeof selectedResults[number]) => money.format(item.result.yieldWasteCost),
         },
         {
           label: 'Packaging',
@@ -761,7 +1664,7 @@ export function DishComparisonModule({ state }: { state: StoreState }) {
         },
       ],
     },
-  ]), [selectedResults]);
+  ]), []);
 
   return (
     <section className="content-stack">
@@ -900,6 +1803,7 @@ export function DishComparisonModule({ state }: { state: StoreState }) {
 export function ReportsModule({ state }: { state: StoreState }) {
   const report = useMemo(() => getReportSnapshot(state), [state]);
   const metrics = useMemo(() => getDashboardMetrics(state), [state]);
+  const inventoryPlanning = useMemo(() => getInventoryPlanningSnapshot(state), [state]);
   const latestProjection = useMemo(() => getLatestProjection(state.projections), [state.projections]);
   const projectedSales = metrics.monthlyProjection;
   const projectedNetSales = report.projectedNetSales;
@@ -907,6 +1811,41 @@ export function ReportsModule({ state }: { state: StoreState }) {
   const contributionCoverage = projectedSales - report.breakEvenSales;
   const wasteRate = projectedSales > 0 ? report.wasteValue / projectedSales : 0;
   const fixedCostWeight = projectedSales > 0 ? report.totalMonthlyStructure / projectedSales : 0;
+  const currentMonthKey = new Date().toISOString().slice(0, 7);
+  const currentMonthSales = state.sales.filter((sale) => sale.soldAt.slice(0, 7) === currentMonthKey);
+  const currentMonthUnits = currentMonthSales.reduce(
+    (sum, sale) => sum + sale.items.reduce((itemSum, item) => itemSum + item.quantity, 0),
+    0,
+  );
+  const currentMonthFoodCost = currentMonthSales.reduce(
+    (sum, sale) =>
+      sum +
+      sale.items.reduce((itemSum, item) => {
+        const dish = state.dishes.find((candidate) => candidate.id === item.dishId);
+        if (!dish) return itemSum;
+        const result = calculateDishCost(state, dish);
+        return itemSum + (result.materialCost + result.wasteCost) * item.quantity;
+      }, 0),
+    0,
+  );
+  const currentMonthNonFoodCosts = report.totalMonthlyStructure;
+  const currentMonthGrossSales = inventoryPlanning.currentMonthSalesValue;
+  const taxRate = Math.max(state.business.taxRate, 0);
+  const currentMonthNetSales = taxRate > 0 ? currentMonthGrossSales / (1 + taxRate) : currentMonthGrossSales;
+  const currentMonthVatDebit = currentMonthGrossSales - currentMonthNetSales;
+  const currentMonthVatCredit = taxRate > 0 ? inventoryPlanning.usedThisMonthValue - inventoryPlanning.usedThisMonthValue / (1 + taxRate) : 0;
+  const currentMonthVatPayable = currentMonthVatDebit - currentMonthVatCredit;
+  const currentMonthMbe = currentMonthGrossSales - currentMonthFoodCost;
+  const currentMonthProfitBeforeVat = currentMonthGrossSales - currentMonthFoodCost - currentMonthNonFoodCosts;
+  const currentMonthProfitAfterVat = currentMonthProfitBeforeVat - currentMonthVatPayable;
+  const currentMonthAllCostsWithVat = currentMonthFoodCost + currentMonthNonFoodCosts + currentMonthVatPayable;
+  const currentMonthFoodCostPercent = currentMonthGrossSales > 0 ? currentMonthFoodCost / currentMonthGrossSales : 0;
+  const currentMonthMbePercent = currentMonthGrossSales > 0 ? currentMonthMbe / currentMonthGrossSales : 0;
+  const currentMonthRealMarginPercent = currentMonthGrossSales > 0 ? currentMonthProfitAfterVat / currentMonthGrossSales : 0;
+  const currentMonthInventoryWeight = currentMonthGrossSales > 0 ? report.inventoryValue / currentMonthGrossSales : 0;
+  const currentMonthWasteRate = currentMonthGrossSales > 0 ? report.wasteValue / currentMonthGrossSales : 0;
+  const currentMonthAverageDishPrice = currentMonthUnits > 0 ? currentMonthGrossSales / currentMonthUnits : 0;
+  const currentMonthBreakEvenCoverage = report.breakEvenSales > 0 ? currentMonthGrossSales / report.breakEvenSales : 0;
   const topContributionDishes = metrics.topDishes.slice(0, 4).map((item) => ({
     id: item.dish.id,
     name: item.dish.name,
@@ -944,6 +1883,8 @@ export function ReportsModule({ state }: { state: StoreState }) {
     { name: 'Colchon neto', value: contributionCoverage, fill: contributionCoverage >= 0 ? '#ca6702' : '#c1121f' },
   ];
   const executiveRows = [
+    { label: 'Inventario necesario proximo mes', value: money.format(inventoryPlanning.nextMonthRequiredValue), helper: 'Inventario gastado del mes ajustado por la variacion entre venta real y venta proyectada, mas produccion pendiente.' },
+    { label: 'Disponible neto para proximo mes', value: money.format(inventoryPlanning.netAvailableForNextMonth), helper: inventoryPlanning.purchaseGapForNextMonth > 0 ? `Faltan ${money.format(inventoryPlanning.purchaseGapForNextMonth)} para cubrir la necesidad proyectada.` : 'Inventario actual menos necesidad proyectada del proximo mes.' },
     { label: 'Margen de contribucion medio', value: money.format(report.contributionMargin), helper: 'Aporte promedio por unidad vendida antes de cubrir estructura fija.' },
     { label: 'Platos-equivalentes para equilibrio', value: report.breakEvenUnits > 0 ? `${report.breakEvenUnits} platos` : 'Sin base', helper: `Equivalen a platos vendidos con aporte medio de ${money.format(report.contributionMargin)} por unidad.` },
     { label: 'Tickets promedio para equilibrio', value: report.breakEvenGuestTickets > 0 ? `${report.breakEvenGuestTickets} tickets` : 'Sin base', helper: `Calculados con ticket promedio proyectado de ${money.format(report.projectedAverageFoodTicket)}.` },
@@ -952,7 +1893,14 @@ export function ReportsModule({ state }: { state: StoreState }) {
     { label: 'IVA debito proyectado', value: money.format(report.projectedVatDebit), helper: 'IVA generado por las ventas proyectadas, asumiendo tickets con IVA incluido.' },
     { label: 'IVA credito proyectado', value: money.format(report.projectedVatCredit), helper: 'IVA recuperable estimado desde compras e insumos afectos al periodo.' },
     { label: 'IVA neto proyectado', value: money.format(report.projectedVatPayable), helper: 'Diferencia entre IVA debito de ventas e IVA credito de compras.' },
-    { label: 'Utilidad real despues de IVA', value: money.format(report.projectedRealProfitAfterVat), helper: 'Resultado final estimado del negocio despues de compensar IVA debito y credito.' },
+    { label: 'Utilidad proyectada despues de IVA', value: money.format(report.projectedRealProfitAfterVat), helper: 'Resultado final estimado del negocio despues de compensar IVA debito y credito.' },
+  ];
+  const currentMonthNotes = [
+    { label: 'Costos totales + IVA', helper: `${money.format(currentMonthFoodCost)} food cost + ${money.format(currentMonthNonFoodCosts)} costos totales + ${money.format(currentMonthVatPayable)} IVA neto = ${money.format(currentMonthAllCostsWithVat)}.` },
+    { label: 'IVA neto a pagar', helper: `${money.format(currentMonthVatDebit)} IVA debito - ${money.format(currentMonthVatCredit)} IVA credito = ${money.format(currentMonthVatPayable)}.` },
+    { label: 'Utilidad real post IVA', helper: `${money.format(currentMonthGrossSales)} venta bruta - ${money.format(currentMonthAllCostsWithVat)} costos totales + IVA = ${money.format(currentMonthProfitAfterVat)}.` },
+    { label: 'Margen real post IVA', helper: `${money.format(currentMonthProfitAfterVat)} utilidad real post IVA / ${money.format(currentMonthGrossSales)} venta bruta = ${percent.format(currentMonthRealMarginPercent)}.` },
+    { label: 'Cobertura equilibrio real', helper: `${money.format(currentMonthGrossSales)} venta bruta / ${money.format(report.breakEvenSales)} punto de equilibrio = ${percent.format(currentMonthBreakEvenCoverage)}.` },
   ];
   const eventRows = state.eventQuotes.map((eventQuote) => {
     const eventOperationalCost = eventQuote.laborCost + eventQuote.transportCost + eventQuote.setupCost + eventQuote.equipmentCost;
@@ -993,26 +1941,80 @@ export function ReportsModule({ state }: { state: StoreState }) {
 
   return (
     <section className="content-stack">
-      <div className="kpi-grid">
-        <KpiCard title="Inventario valorizado" value={money.format(report.inventoryValue)} icon={Boxes} />
-        <KpiCard title="Merma valorizada" value={money.format(report.wasteValue)} icon={TrendingDown} />
-        <KpiCard title="Punto de equilibrio" value={money.format(report.breakEvenSales)} icon={Target} />
-        <KpiCard title="Venta proyectada bruta" value={money.format(projectedSales)} icon={TrendingUp} />
-        <KpiCard title="IVA neto proyectado" value={money.format(report.projectedVatPayable)} icon={Percent} />
-        <KpiCard title="Utilidad real post IVA" value={money.format(report.projectedRealProfitAfterVat)} icon={Wallet} />
-      </div>
-
       <div className="dashboard-grid reports-layout">
         <section className="panel wide">
-          <PanelHeader title="Lectura ejecutiva del negocio" />
+          <PanelHeader title="Reporte mes actual" />
           <div className="summary-strip compact">
+            <SummaryMetric label="Venta bruta del mes" value={money.format(currentMonthGrossSales)} />
+            <SummaryMetric label="Venta neta del mes" value={money.format(currentMonthNetSales)} />
+            <SummaryMetric label="Unidades vendidas" value={`${currentMonthUnits} platos`} />
+            <SummaryMetric label="Precio promedio plato" value={money.format(currentMonthAverageDishPrice)} />
+            <SummaryMetric label="Food cost $" value={money.format(currentMonthFoodCost)} />
+            <SummaryMetric label="Food cost %" value={percent.format(currentMonthFoodCostPercent)} />
+            <SummaryMetric label="Costos totales" value={money.format(currentMonthNonFoodCosts)} />
+            <SummaryMetric label="IVA debito" value={money.format(currentMonthVatDebit)} />
+            <SummaryMetric label="IVA credito" value={money.format(currentMonthVatCredit)} />
+            <SummaryMetric label="IVA neto a pagar" value={money.format(currentMonthVatPayable)} />
+            <SummaryMetric label="Inventario gastado mes" value={money.format(inventoryPlanning.usedThisMonthValue)} />
+            <SummaryMetric label="Inventario valorizado" value={money.format(report.inventoryValue)} />
+            <SummaryMetric label="MBE $" value={money.format(currentMonthMbe)} />
+            <SummaryMetric label="MBE %" value={percent.format(currentMonthMbePercent)} />
+            <SummaryMetric label="Punto de equilibrio" value={money.format(report.breakEvenSales)} />
+            <SummaryMetric label="Margen real post IVA" value={percent.format(currentMonthRealMarginPercent)} />
+            <SummaryMetric label="Costos totales + IVA" value={money.format(currentMonthAllCostsWithVat)} />
+            <SummaryMetric label="Utilidad real post IVA" value={money.format(currentMonthProfitAfterVat)} tone="highlight" />
+          </div>
+          <div className="metric-table compact-notes">
+            {currentMonthNotes.map((row) => (
+              <div className="report-metric-row" key={row.label}>
+                <div>
+                  <span>{row.label}</span>
+                  <small>{row.helper}</small>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+        <section className="panel">
+          <PanelHeader title="Lectura rapida mes actual" />
+          <div className="stack-list">
+            <div className="record-row">
+              <strong>Margen real del mes</strong>
+              <span>{`${percent.format(currentMonthRealMarginPercent)} de la venta queda como utilidad real post IVA.`}</span>
+            </div>
+            <div className="record-row">
+              <strong>Inventario disponible</strong>
+              <span>{`${percent.format(currentMonthInventoryWeight)} de la venta real del mes esta cubierto por stock valorizado actual.`}</span>
+            </div>
+            <div className="record-row">
+              <strong>Resultado post IVA</strong>
+              <span>{`Despues de estructura e IVA neto, el mes queda en ${money.format(currentMonthProfitAfterVat)}.`}</span>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <details className="panel collapsible-panel">
+        <summary className="collapsible-trigger">
+          <span className="collapsible-copy">
+            <strong>Lectura de proyeccion siguiente mes</strong>
+            <span>Venta, inventario, IVA y utilidad estimada del periodo siguiente.</span>
+          </span>
+        </summary>
+        <div className="collapsible-body">
+          <div className="summary-strip compact">
+            <SummaryMetric label="Venta proyectada bruta" value={money.format(projectedSales)} />
+            <SummaryMetric label="Venta neta proyectada" value={money.format(projectedNetSales)} />
             <SummaryMetric label="Cobertura del equilibrio" value={percent.format(breakEvenCoverage)} />
             <SummaryMetric label="Peso fijo sobre venta" value={percent.format(fixedCostWeight)} />
             <SummaryMetric label="Merma sobre venta" value={percent.format(wasteRate)} />
             <SummaryMetric label="Inventario vs venta proyectada" value={percent.format(projectedSales > 0 ? report.inventoryValue / projectedSales : 0)} />
-            <SummaryMetric label="Venta neta proyectada" value={money.format(projectedNetSales)} />
+            <SummaryMetric label="Necesario proximo mes" value={money.format(inventoryPlanning.nextMonthRequiredValue)} />
+            <SummaryMetric label="Disponible neto proximo mes" value={money.format(inventoryPlanning.netAvailableForNextMonth)} />
             <SummaryMetric label="IVA debito proyectado" value={money.format(report.projectedVatDebit)} />
             <SummaryMetric label="IVA credito proyectado" value={money.format(report.projectedVatCredit)} />
+            <SummaryMetric label="IVA neto proyectado" value={money.format(report.projectedVatPayable)} />
+            <SummaryMetric label="Utilidad proyectada post IVA" value={money.format(report.projectedRealProfitAfterVat)} />
             <SummaryMetric label="Precio promedio plato" value={money.format(report.averageDishSellingPrice)} />
             <SummaryMetric label="Ticket promedio proyectado" value={money.format(report.projectedAverageFoodTicket)} />
           </div>
@@ -1044,17 +2046,17 @@ export function ReportsModule({ state }: { state: StoreState }) {
               </div>
             ))}
           </div>
-        </section>
-        <section className="panel">
-          <PanelHeader title="Focos prioritarios" />
-          <div className="stack-list">
-            {priorityAlerts.map((alert) => (
-              <AlertRow key={alert.id} title={alert.title} description={alert.description} severity={alert.severity} />
-            ))}
-          </div>
-        </section>
-      </div>
+        </div>
+      </details>
 
+      <details className="panel collapsible-panel">
+        <summary className="collapsible-trigger">
+          <span className="collapsible-copy">
+            <strong>Puente de resultado proyectado</strong>
+            <span>Comparacion entre venta proyectada, punto de equilibrio y holgura esperada.</span>
+          </span>
+        </summary>
+        <div className="collapsible-body">
       <div className="dashboard-grid reports-layout">
         <section className="panel wide">
           <PanelHeader title="Puente de resultado proyectado" />
@@ -1098,6 +2100,8 @@ export function ReportsModule({ state }: { state: StoreState }) {
           </div>
         </section>
       </div>
+        </div>
+      </details>
 
       <div className="dashboard-grid reports-layout">
         <section className="panel wide">
@@ -1153,6 +2157,14 @@ export function ReportsModule({ state }: { state: StoreState }) {
         </section>
       </div>
 
+      <details className="panel collapsible-panel">
+        <summary className="collapsible-trigger">
+          <span className="collapsible-copy">
+            <strong>Origen de la venta proyectada</strong>
+            <span>Detalle de la proyeccion comercial vigente y su conversion mensual.</span>
+          </span>
+        </summary>
+        <div className="collapsible-body">
       <div className="dashboard-grid reports-layout">
         <section className="panel wide">
           <PanelHeader title="Origen de la venta proyectada" />
@@ -1231,6 +2243,8 @@ export function ReportsModule({ state }: { state: StoreState }) {
           </div>
         </section>
       </div>
+        </div>
+      </details>
     </section>
   );
 }
@@ -1254,9 +2268,9 @@ function PanelHeader({ title, action }: { title: string; action?: ReactNode }) {
   );
 }
 
-function SummaryMetric({ label, value }: { label: string; value: string }) {
+function SummaryMetric({ label, value, tone }: { label: string; value: string; tone?: 'highlight' }) {
   return (
-    <div className="summary-metric">
+    <div className={`summary-metric${tone ? ` ${tone}` : ''}`}>
       <span>{label}</span>
       <strong>{value}</strong>
     </div>

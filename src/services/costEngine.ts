@@ -88,6 +88,21 @@ export function calculateUsefulUnitCost(purchasePrice: number, purchaseUnit: Uni
   return purchasePrice / Math.max(normalizedPurchaseUnit * usableFactor, 0.001);
 }
 
+function getIngredientUsefulUnitCost(ingredient: Ingredient) {
+  return calculateUsefulUnitCost(
+    ingredient.purchasePrice,
+    ingredient.purchaseUnit,
+    ingredient.useUnit,
+    ingredient.usableYieldPercent,
+  );
+}
+
+function calculateIngredientYieldWasteCost(ingredient: Ingredient, normalizedQuantity: number) {
+  const normalizedPurchaseUnit = convertQuantity(1, ingredient.purchaseUnit, ingredient.useUnit);
+  const unitCostBeforeYield = ingredient.purchasePrice / Math.max(normalizedPurchaseUnit, 0.001);
+  return Math.max(getIngredientUsefulUnitCost(ingredient) - unitCostBeforeYield, 0) * normalizedQuantity;
+}
+
 export function roundPriceForCustomer(price: number) {
   return Math.ceil(Math.max(price, 0) / 100) * 100;
 }
@@ -108,10 +123,9 @@ function calculateIngredientLineCost(
   ingredient: Ingredient,
   quantity: number,
   unit: Unit,
-  wastePercent = 0,
 ) {
   const normalized = convertQuantity(quantity, unit, ingredient.useUnit);
-  return normalized * ingredient.usefulUnitCost * (1 + wastePercent / 100);
+  return normalized * getIngredientUsefulUnitCost(ingredient);
 }
 
 function getProjectedMonthlyUnits(state: AppState) {
@@ -265,7 +279,8 @@ export function calculateBaseRecipeCost(state: AppState, recipe: BaseRecipe): Ba
     const ingredient = getIngredient(state, item.ingredientId);
     if (!ingredient) return [];
     const normalizedQuantity = convertQuantity(item.quantity, item.unit, ingredient.useUnit);
-    const lineCost = calculateIngredientLineCost(ingredient, item.quantity, item.unit, item.wastePercent);
+    const lineCost = calculateIngredientLineCost(ingredient, item.quantity, item.unit);
+    const yieldWasteCost = calculateIngredientYieldWasteCost(ingredient, normalizedQuantity);
     return [{
       recipeItemId: item.id,
       ingredientId: ingredient.id,
@@ -276,7 +291,8 @@ export function calculateBaseRecipeCost(state: AppState, recipe: BaseRecipe): Ba
       normalizedQuantity,
       useUnit: ingredient.useUnit,
       purchasePrice: ingredient.purchasePrice,
-      usefulUnitCost: ingredient.usefulUnitCost,
+      usefulUnitCost: getIngredientUsefulUnitCost(ingredient),
+      yieldWasteCost,
       lineCost,
     }];
   });
@@ -308,7 +324,8 @@ export function calculateDishCost(state: AppState, dish: Dish): DishCostResult {
   let baseRecipeCost = 0;
   let packagingCost = 0;
   let directMaterialCost = 0;
-  let wasteCost = 0;
+  const wasteCost = 0;
+  let yieldWasteCost = 0;
   let baseRecipeLaborCost = 0;
   let baseRecipeIndirectCost = 0;
 
@@ -317,12 +334,13 @@ export function calculateDishCost(state: AppState, dish: Dish): DishCostResult {
       const ingredient = getIngredient(state, component.refId);
       if (!ingredient) return;
       const normalized = convertQuantity(component.quantity, component.unit, ingredient.useUnit);
-      const netLineCost = normalized * ingredient.usefulUnitCost;
-      const lineWasteCost = netLineCost * (component.wastePercent / 100);
-      const lineCost = netLineCost + lineWasteCost;
+      const unitCost = getIngredientUsefulUnitCost(ingredient);
+      const netLineCost = normalized * unitCost;
+      const lineYieldWasteCost = calculateIngredientYieldWasteCost(ingredient, normalized);
+      const lineCost = netLineCost;
       ingredientCost += lineCost;
       directMaterialCost += netLineCost;
-      wasteCost += lineWasteCost;
+      yieldWasteCost += lineYieldWasteCost;
       componentLines.push({
         componentId: component.id,
         componentType: component.componentType,
@@ -331,7 +349,8 @@ export function calculateDishCost(state: AppState, dish: Dish): DishCostResult {
         quantity: component.quantity,
         unit: component.unit,
         wastePercent: component.wastePercent,
-        unitCost: ingredient.usefulUnitCost,
+        unitCost,
+        yieldWasteCost: lineYieldWasteCost,
         lineCost,
       });
       return;
@@ -345,13 +364,13 @@ export function calculateDishCost(state: AppState, dish: Dish): DishCostResult {
       const scaledIngredientCost = result.ingredientCost * recipeFactor;
       const scaledLaborCost = result.laborCost * recipeFactor;
       const scaledIndirectCost = result.indirectCost * recipeFactor;
-      const lineWasteCost = scaledIngredientCost * (component.wastePercent / 100);
-      const lineCost = scaledIngredientCost + lineWasteCost + scaledLaborCost + scaledIndirectCost;
+      const scaledYieldWasteCost = result.lines.reduce((sum, line) => sum + line.yieldWasteCost, 0) * recipeFactor;
+      const lineCost = scaledIngredientCost + scaledLaborCost + scaledIndirectCost;
       baseRecipeCost += lineCost;
       baseRecipeLaborCost += scaledLaborCost;
       baseRecipeIndirectCost += scaledIndirectCost;
       directMaterialCost += scaledIngredientCost;
-      wasteCost += lineWasteCost;
+      yieldWasteCost += scaledYieldWasteCost;
       componentLines.push({
         componentId: component.id,
         componentType: component.componentType,
@@ -361,15 +380,17 @@ export function calculateDishCost(state: AppState, dish: Dish): DishCostResult {
         unit: component.unit,
         wastePercent: component.wastePercent,
         unitCost: lineCost / Math.max(component.quantity, 0.001),
+        yieldWasteCost: scaledYieldWasteCost,
         lineCost,
         nestedLines: result.lines.map((line) => ({
           ingredientId: line.ingredientId,
           ingredientName: line.ingredientName,
-          quantity: line.normalizedQuantity * recipeFactor * (1 + component.wastePercent / 100),
+          quantity: line.normalizedQuantity * recipeFactor,
           unit: line.useUnit,
           purchasePrice: line.purchasePrice,
           usefulUnitCost: line.usefulUnitCost,
-          lineCost: line.lineCost * recipeFactor * (1 + component.wastePercent / 100),
+          yieldWasteCost: line.yieldWasteCost * recipeFactor,
+          lineCost: line.lineCost * recipeFactor,
         })),
       });
       return;
@@ -388,6 +409,7 @@ export function calculateDishCost(state: AppState, dish: Dish): DishCostResult {
       unit: component.unit,
       wastePercent: component.wastePercent,
       unitCost: packaging.unitCost,
+      yieldWasteCost: 0,
       lineCost,
     });
   });
@@ -414,7 +436,8 @@ export function calculateDishCost(state: AppState, dish: Dish): DishCostResult {
   fixedAllocatedCost += capacitySnapshot.fixedCostPerDish * dish.indirectCostShare;
 
   const materialCost = directMaterialCost;
-  const directCost = materialCost + wasteCost + packagingCost;
+  const foodCostAmount = materialCost + wasteCost;
+  const directCost = foodCostAmount + packagingCost;
   const productionCost =
     materialCost +
     wasteCost +
@@ -437,16 +460,19 @@ export function calculateDishCost(state: AppState, dish: Dish): DishCostResult {
   const subtotalBeforeMargin = subtotalWithoutSafety + safetyBufferCost;
   const totalCost = subtotalBeforeMargin;
   const targetFoodCost = Math.max(getEffectiveFoodCostTarget(state, dish), 0.01);
-  const suggestedPriceByFoodCost = directCost / targetFoodCost;
+  const suggestedPriceByFoodCost = foodCostAmount / Math.min(targetFoodCost, 0.25);
   const utilityTargetAmount = materialCost * Math.max(dish.desiredMargin, 0);
   const formulaPrice = subtotalBeforeMargin + utilityTargetAmount;
   const suggestedPriceByMargin = formulaPrice;
   const recommendedPrice = Math.max(suggestedPriceByFoodCost, formulaPrice);
-  const grossMarginPercent = recommendedPrice === 0 ? 0 : (recommendedPrice - directCost) / recommendedPrice;
-  const netMarginPercent = recommendedPrice === 0 ? 0 : (recommendedPrice - subtotalBeforeMargin) / recommendedPrice;
-  const totalUtilityAmount = recommendedPrice - totalCost;
+  const customerFinalPrice = dish.customerFacingPrice && dish.customerFacingPrice > 0 ? dish.customerFacingPrice : recommendedPrice;
+  const mbeAmount = customerFinalPrice - foodCostAmount;
+  const mbePercent = customerFinalPrice === 0 ? 0 : mbeAmount / customerFinalPrice;
+  const grossMarginPercent = mbePercent;
+  const netMarginPercent = customerFinalPrice === 0 ? 0 : (customerFinalPrice - subtotalBeforeMargin) / customerFinalPrice;
+  const totalUtilityAmount = customerFinalPrice - totalCost;
   const totalUtilityOnCostPercent = totalCost === 0 ? 0 : totalUtilityAmount / totalCost;
-  const foodCostPercent = recommendedPrice === 0 ? 0 : (materialCost + wasteCost + packagingCost) / recommendedPrice;
+  const foodCostPercent = customerFinalPrice === 0 ? 0 : foodCostAmount / customerFinalPrice;
 
   return {
     componentLines,
@@ -455,6 +481,7 @@ export function calculateDishCost(state: AppState, dish: Dish): DishCostResult {
     packagingCost,
     materialCost,
     wasteCost,
+    yieldWasteCost,
     baseRecipeLaborCost,
     baseRecipeIndirectCost,
     variableCost,
@@ -471,6 +498,8 @@ export function calculateDishCost(state: AppState, dish: Dish): DishCostResult {
     utilityTargetAmount,
     totalUtilityAmount,
     totalUtilityOnCostPercent,
+    mbeAmount,
+    mbePercent,
     suggestedPriceByFoodCost,
     suggestedPriceByMargin,
     recommendedPrice,
@@ -746,21 +775,21 @@ export function getDashboardAlerts(state: AppState): DashboardAlert[] {
 
   state.dishes.forEach((dish) => {
     const result = calculateDishCost(state, dish);
-    const target = getEffectiveFoodCostTarget(state, dish);
+    const target = Math.min(getEffectiveFoodCostTarget(state, dish), 0.25);
     if (result.foodCostPercent > target) {
       alerts.push({
         id: `fc-${dish.id}`,
         severity: 'warning',
-        title: 'Food cost sobre objetivo',
+        title: 'Food cost sobre limite 25%',
         description: `${dish.name} opera en ${(result.foodCostPercent * 100).toFixed(1)}% vs objetivo ${(target * 100).toFixed(1)}%.`,
       });
     }
-    if (result.netMarginPercent < 0.18) {
+    if (result.mbePercent < 0.75) {
       alerts.push({
         id: `margin-${dish.id}`,
         severity: 'critical',
-        title: 'Margen neto bajo',
-        description: `${dish.name} necesita ajuste de precio o receta.`,
+        title: 'MBE bajo 75%',
+        description: `${dish.name} tiene MBE ${(result.mbePercent * 100).toFixed(1)}%. Ajustar precio o materia prima.`,
       });
     }
   });
@@ -789,7 +818,13 @@ export function getDashboardMetrics(state: AppState): DashboardMetrics {
   const salesRevenue = state.sales.reduce(
     (sum, sale) =>
       sum +
-      sale.items.reduce((saleSum, item) => saleSum + item.quantity * item.unitPrice * (1 - item.discount), 0),
+      sale.items.reduce((saleSum, item) => {
+        const dish = state.dishes.find((candidate) => candidate.id === item.dishId);
+        if (!dish) return saleSum;
+        const result = calculateDishCost(state, dish);
+        const customerPrice = dish.customerFacingPrice && dish.customerFacingPrice > 0 ? dish.customerFacingPrice : result.recommendedPrice;
+        return saleSum + item.quantity * customerPrice;
+      }, 0),
     0,
   );
 
@@ -804,8 +839,20 @@ export function getDashboardMetrics(state: AppState): DashboardMetrics {
     0,
   );
 
-  const foodCostPercent = salesRevenue === 0 ? 0 : salesCosts / salesRevenue;
-  const grossMarginPercent = salesRevenue === 0 ? 0 : (salesRevenue - salesCosts) / salesRevenue;
+  const salesFoodCost = state.sales.reduce(
+    (sum, sale) =>
+      sum +
+      sale.items.reduce((saleSum, item) => {
+        const dish = state.dishes.find((candidate) => candidate.id === item.dishId);
+        if (!dish) return saleSum;
+        const result = calculateDishCost(state, dish);
+        return saleSum + (result.materialCost + result.wasteCost) * item.quantity;
+      }, 0),
+    0,
+  );
+
+  const foodCostPercent = salesRevenue === 0 ? 0 : salesFoodCost / salesRevenue;
+  const grossMarginPercent = salesRevenue === 0 ? 0 : (salesRevenue - salesFoodCost) / salesRevenue;
   const wasteValue = getWasteValue(state);
   const indirectMonthly = state.indirectCosts.reduce((sum, item) => sum + getMonthlyCostAmount(item), 0);
   const estimatedProfit = salesRevenue - salesCosts - wasteValue - indirectMonthly / 4;
@@ -841,7 +888,7 @@ export function getDashboardMetrics(state: AppState): DashboardMetrics {
 
   return {
     totalSales: salesRevenue,
-    totalCosts: salesCosts + wasteValue,
+    totalCosts: salesCosts,
     foodCostPercent,
     grossMarginPercent,
     netMarginPercent,
@@ -867,33 +914,32 @@ export function getMenuEngineering(state: AppState): MenuEngineeringItem[] {
     const saleItems = state.sales.flatMap((sale) => sale.items.filter((item) => item.dishId === dish.id));
     const unitsSold = saleItems.reduce((sum, item) => sum + item.quantity, 0);
     const revenue = saleItems.reduce((sum, item) => sum + item.quantity * item.unitPrice * (1 - item.discount), 0);
-    const contribution = revenue - result.totalCost * unitsSold;
+    const foodCostAmount = result.materialCost + result.wasteCost;
+    const contribution = revenue - foodCostAmount * unitsSold;
     return { dish, result, unitsSold, revenue, contribution };
   });
 
   const averagePopularity =
     items.reduce((sum, item) => sum + item.unitsSold, 0) / Math.max(items.length, 1);
-  const averageContribution =
-    items.reduce((sum, item) => sum + item.contribution, 0) / Math.max(items.length, 1);
 
   return items.map((item) => {
     const highPopularity = item.unitsSold >= averagePopularity;
-    const highContribution = item.contribution >= averageContribution;
-    const quadrant = highContribution && highPopularity
+    const highMbe = item.result.mbePercent >= 0.75;
+    const quadrant = highMbe && highPopularity
       ? 'Estrella'
-      : !highContribution && highPopularity
+      : !highMbe && highPopularity
         ? 'Vaca'
-        : highContribution && !highPopularity
-          ? 'Puzzle'
-          : 'Perro';
+        : highMbe && !highPopularity
+          ? 'Enigma'
+          : 'Ajustar';
     const recommendedAction =
       quadrant === 'Estrella'
         ? 'Mantener posicion, proteger calidad y no tocar gramaje.'
         : quadrant === 'Vaca'
           ? 'Reducir costo oculto o subir precio con cuidado.'
-          : quadrant === 'Puzzle'
+          : quadrant === 'Enigma'
             ? 'Reposicionar en carta y reforzar venta consultiva.'
-            : 'Rediseñar, simplificar o retirar del menu.';
+            : 'No vender como esta: subir MBE sobre 75% y reubicar antes de publicar.';
 
     return {
       ...item,

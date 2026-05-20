@@ -258,6 +258,7 @@ create table public.dishes (
   technical_notes text not null default '',
   shelf_life_hours numeric(10, 2) not null default 0,
   sales_count integer not null default 0,
+  customer_facing_price numeric(14, 4),
   image_url text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()

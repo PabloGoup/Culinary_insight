@@ -395,8 +395,7 @@ h2 {
   font-size: clamp(18px, 1.55vw, 22px);
   line-height: 1.1;
   letter-spacing: 0;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  white-space: nowrap;
 }
 
 .panel-header {
@@ -1549,6 +1548,24 @@ button:focus-visible {
   display: block;
   font-size: 19px;
   margin-top: 6px;
+}
+
+.summary-metric.highlight {
+  background: #fff4e8;
+  border: 1px solid rgba(250, 112, 0, 0.3);
+  border-radius: 8px;
+  margin: -10px -12px;
+  padding: 10px 12px;
+}
+
+.summary-metric.highlight span {
+  color: #8a3b00;
+  font-weight: 800;
+}
+
+.summary-metric.highlight strong {
+  color: var(--udla-orange-dark);
+  font-size: 23px;
 }
 
 .metric-row {

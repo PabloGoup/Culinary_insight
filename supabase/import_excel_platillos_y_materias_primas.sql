@@ -119,7 +119,7 @@ begin
     ('La Oferta', 'Aceite vegetal', 5, 'litro', 9625, 1.0),
     ('EATTUCH', 'Aji de color', 1, 'kg', 5120, 1.0),
     ('Service Ceshop', 'Oregano', 1, 'kg', 8290, 1.0),
-    ('El rincon huerto', 'Congrio', 1, 'kg', 9990, 0.7),
+    ('El rincon huerto', 'Congrio', 1, 'kg', 9990, 0.82),
     ('Myfood', 'Puerro', 1, 'kg', 4450, 0.85),
     ('Finnca', 'Menta', 1, 'kg', 16000, 1.0),
     ('Casa Deli', 'Mix berries', 1, 'kg', 6490, 1.0),
@@ -532,8 +532,8 @@ begin
       'La planilla solo indica merengue; se estima una formula basica para costeo.'
     ),
     (
-      'bizcocho-selectino',
-      'Bizcocho selectino',
+      'bizcocho-celestino',
+      'Bizcocho celestino',
       'postres',
       1600,
       'g',
@@ -544,7 +544,7 @@ begin
       'Batir huevos, integrar secos y hornear con manjar como base de sabor.',
       'Miga humeda y corte estable.',
       array['Gluten', 'Huevos', 'Lacteos'],
-      'La planilla de selectino es incompleta. Esta formula es la mas inferida del script.'
+      'La planilla de celestino es incompleta. Esta formula es la mas inferida del script.'
     );
 
   insert into public.recipes (
@@ -602,7 +602,7 @@ begin
       pg_temp.seed_uuid(v_business_id, 'recipe:masa-pie-maracuya'),
       pg_temp.seed_uuid(v_business_id, 'recipe:relleno-maracuya'),
       pg_temp.seed_uuid(v_business_id, 'recipe:merengue-pie'),
-      pg_temp.seed_uuid(v_business_id, 'recipe:bizcocho-selectino')
+      pg_temp.seed_uuid(v_business_id, 'recipe:bizcocho-celestino')
     );
 
   insert into public.recipe_items (id, business_id, recipe_id, ingredient_id, quantity, unit, waste_percent)
@@ -665,13 +665,13 @@ begin
     (pg_temp.seed_uuid(v_business_id, 'recipe-item:merengue:huevos'), v_business_id, pg_temp.seed_uuid(v_business_id, 'recipe:merengue-pie'), pg_temp.seed_uuid(v_business_id, 'ingredient:' || pg_temp.import_slug('Huevos')), 4, 'unidad', 0),
     (pg_temp.seed_uuid(v_business_id, 'recipe-item:merengue:azucar'), v_business_id, pg_temp.seed_uuid(v_business_id, 'recipe:merengue-pie'), pg_temp.seed_uuid(v_business_id, 'ingredient:' || pg_temp.import_slug('Azucar')), 220, 'g', 0),
 
-    (pg_temp.seed_uuid(v_business_id, 'recipe-item:bizcocho-selectino:harina'), v_business_id, pg_temp.seed_uuid(v_business_id, 'recipe:bizcocho-selectino'), pg_temp.seed_uuid(v_business_id, 'ingredient:' || pg_temp.import_slug('Harina')), 350, 'g', 0),
-    (pg_temp.seed_uuid(v_business_id, 'recipe-item:bizcocho-selectino:azucar'), v_business_id, pg_temp.seed_uuid(v_business_id, 'recipe:bizcocho-selectino'), pg_temp.seed_uuid(v_business_id, 'ingredient:' || pg_temp.import_slug('Azucar')), 220, 'g', 0),
-    (pg_temp.seed_uuid(v_business_id, 'recipe-item:bizcocho-selectino:aceite-vegetal'), v_business_id, pg_temp.seed_uuid(v_business_id, 'recipe:bizcocho-selectino'), pg_temp.seed_uuid(v_business_id, 'ingredient:' || pg_temp.import_slug('Aceite vegetal')), 180, 'ml', 0),
-    (pg_temp.seed_uuid(v_business_id, 'recipe-item:bizcocho-selectino:huevos'), v_business_id, pg_temp.seed_uuid(v_business_id, 'recipe:bizcocho-selectino'), pg_temp.seed_uuid(v_business_id, 'ingredient:' || pg_temp.import_slug('Huevos')), 6, 'unidad', 0),
-    (pg_temp.seed_uuid(v_business_id, 'recipe-item:bizcocho-selectino:leche-entera'), v_business_id, pg_temp.seed_uuid(v_business_id, 'recipe:bizcocho-selectino'), pg_temp.seed_uuid(v_business_id, 'ingredient:' || pg_temp.import_slug('Leche entera')), 300, 'ml', 0),
-    (pg_temp.seed_uuid(v_business_id, 'recipe-item:bizcocho-selectino:manjar'), v_business_id, pg_temp.seed_uuid(v_business_id, 'recipe:bizcocho-selectino'), pg_temp.seed_uuid(v_business_id, 'ingredient:' || pg_temp.import_slug('Manjar')), 250, 'g', 0),
-    (pg_temp.seed_uuid(v_business_id, 'recipe-item:bizcocho-selectino:sal'), v_business_id, pg_temp.seed_uuid(v_business_id, 'recipe:bizcocho-selectino'), pg_temp.seed_uuid(v_business_id, 'ingredient:' || pg_temp.import_slug('Sal')), 3, 'g', 0)
+    (pg_temp.seed_uuid(v_business_id, 'recipe-item:bizcocho-celestino:harina'), v_business_id, pg_temp.seed_uuid(v_business_id, 'recipe:bizcocho-celestino'), pg_temp.seed_uuid(v_business_id, 'ingredient:' || pg_temp.import_slug('Harina')), 350, 'g', 0),
+    (pg_temp.seed_uuid(v_business_id, 'recipe-item:bizcocho-celestino:azucar'), v_business_id, pg_temp.seed_uuid(v_business_id, 'recipe:bizcocho-celestino'), pg_temp.seed_uuid(v_business_id, 'ingredient:' || pg_temp.import_slug('Azucar')), 220, 'g', 0),
+    (pg_temp.seed_uuid(v_business_id, 'recipe-item:bizcocho-celestino:aceite-vegetal'), v_business_id, pg_temp.seed_uuid(v_business_id, 'recipe:bizcocho-celestino'), pg_temp.seed_uuid(v_business_id, 'ingredient:' || pg_temp.import_slug('Aceite vegetal')), 180, 'ml', 0),
+    (pg_temp.seed_uuid(v_business_id, 'recipe-item:bizcocho-celestino:huevos'), v_business_id, pg_temp.seed_uuid(v_business_id, 'recipe:bizcocho-celestino'), pg_temp.seed_uuid(v_business_id, 'ingredient:' || pg_temp.import_slug('Huevos')), 6, 'unidad', 0),
+    (pg_temp.seed_uuid(v_business_id, 'recipe-item:bizcocho-celestino:leche-entera'), v_business_id, pg_temp.seed_uuid(v_business_id, 'recipe:bizcocho-celestino'), pg_temp.seed_uuid(v_business_id, 'ingredient:' || pg_temp.import_slug('Leche entera')), 300, 'ml', 0),
+    (pg_temp.seed_uuid(v_business_id, 'recipe-item:bizcocho-celestino:manjar'), v_business_id, pg_temp.seed_uuid(v_business_id, 'recipe:bizcocho-celestino'), pg_temp.seed_uuid(v_business_id, 'ingredient:' || pg_temp.import_slug('Manjar')), 250, 'g', 0),
+    (pg_temp.seed_uuid(v_business_id, 'recipe-item:bizcocho-celestino:sal'), v_business_id, pg_temp.seed_uuid(v_business_id, 'recipe:bizcocho-celestino'), pg_temp.seed_uuid(v_business_id, 'ingredient:' || pg_temp.import_slug('Sal')), 3, 'g', 0)
   on conflict (id) do update
   set
     business_id = excluded.business_id,
@@ -793,15 +793,15 @@ begin
       24
     ),
     (
-      'selectino-mas-helado-de-vainilla',
-      'Selectino mas helado de vainilla',
+      'celestino-mas-helado-de-vainilla',
+      'Celestino mas helado de vainilla',
       'postres',
       'labor:pastelero',
       8,
       0.24,
       array['Gluten', 'Huevos', 'Lacteos'],
       'Postre emplatado con helado y montaje de vitrina/pase.',
-      'Importado desde Excel con gramajes estimados. La formula del selectino es la mas inferida porque la planilla no trae suficientes datos estructurales; se resolvio como bizcocho de manjar con helado.',
+      'Importado desde Excel con gramajes estimados. La formula del celestino es la mas inferida porque la planilla no trae suficientes datos estructurales; se resolvio como bizcocho de manjar con helado.',
       18
     );
 
@@ -869,7 +869,7 @@ begin
       pg_temp.seed_uuid(v_business_id, 'dish:pulpo-grillado-con-pure-de-camote'),
       pg_temp.seed_uuid(v_business_id, 'dish:panacota-de-frutos-rojos'),
       pg_temp.seed_uuid(v_business_id, 'dish:pie-de-maracuya'),
-      pg_temp.seed_uuid(v_business_id, 'dish:selectino-mas-helado-de-vainilla')
+      pg_temp.seed_uuid(v_business_id, 'dish:celestino-mas-helado-de-vainilla')
     );
 
   insert into public.dish_components (id, business_id, dish_id, component_type, ref_id, quantity, unit, waste_percent)
@@ -934,9 +934,9 @@ begin
     (pg_temp.seed_uuid(v_business_id, 'dishcomp:pie-maracuya:relleno'), v_business_id, pg_temp.seed_uuid(v_business_id, 'dish:pie-de-maracuya'), 'baseRecipe', pg_temp.seed_uuid(v_business_id, 'recipe:relleno-maracuya'), 120, 'g', 0),
     (pg_temp.seed_uuid(v_business_id, 'dishcomp:pie-maracuya:merengue'), v_business_id, pg_temp.seed_uuid(v_business_id, 'dish:pie-de-maracuya'), 'baseRecipe', pg_temp.seed_uuid(v_business_id, 'recipe:merengue-pie'), 30, 'g', 0),
 
-    (pg_temp.seed_uuid(v_business_id, 'dishcomp:selectino:bizcocho'), v_business_id, pg_temp.seed_uuid(v_business_id, 'dish:selectino-mas-helado-de-vainilla'), 'baseRecipe', pg_temp.seed_uuid(v_business_id, 'recipe:bizcocho-selectino'), 130, 'g', 0),
-    (pg_temp.seed_uuid(v_business_id, 'dishcomp:selectino:helado'), v_business_id, pg_temp.seed_uuid(v_business_id, 'dish:selectino-mas-helado-de-vainilla'), 'ingredient', pg_temp.seed_uuid(v_business_id, 'ingredient:' || pg_temp.import_slug('Helado de vainilla')), 80, 'g', 0),
-    (pg_temp.seed_uuid(v_business_id, 'dishcomp:selectino:manjar'), v_business_id, pg_temp.seed_uuid(v_business_id, 'dish:selectino-mas-helado-de-vainilla'), 'ingredient', pg_temp.seed_uuid(v_business_id, 'ingredient:' || pg_temp.import_slug('Manjar')), 20, 'g', 0)
+    (pg_temp.seed_uuid(v_business_id, 'dishcomp:celestino:bizcocho'), v_business_id, pg_temp.seed_uuid(v_business_id, 'dish:celestino-mas-helado-de-vainilla'), 'baseRecipe', pg_temp.seed_uuid(v_business_id, 'recipe:bizcocho-celestino'), 130, 'g', 0),
+    (pg_temp.seed_uuid(v_business_id, 'dishcomp:celestino:helado'), v_business_id, pg_temp.seed_uuid(v_business_id, 'dish:celestino-mas-helado-de-vainilla'), 'ingredient', pg_temp.seed_uuid(v_business_id, 'ingredient:' || pg_temp.import_slug('Helado de vainilla')), 80, 'g', 0),
+    (pg_temp.seed_uuid(v_business_id, 'dishcomp:celestino:manjar'), v_business_id, pg_temp.seed_uuid(v_business_id, 'dish:celestino-mas-helado-de-vainilla'), 'ingredient', pg_temp.seed_uuid(v_business_id, 'ingredient:' || pg_temp.import_slug('Manjar')), 20, 'g', 0)
   on conflict (id) do update
   set
     business_id = excluded.business_id,

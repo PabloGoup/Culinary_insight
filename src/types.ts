@@ -444,6 +444,7 @@ export interface BaseRecipeCostResult {
     useUnit: Unit;
     purchasePrice: number;
     usefulUnitCost: number;
+    yieldWasteCost: number;
     lineCost: number;
   }>;
   ingredientCost: number;
@@ -463,6 +464,7 @@ export interface DishCostResult {
     unit: Unit;
     wastePercent: number;
     unitCost: number;
+    yieldWasteCost: number;
     lineCost: number;
     nestedLines?: Array<{
       ingredientId: string;
@@ -471,6 +473,7 @@ export interface DishCostResult {
       unit: Unit;
       purchasePrice: number;
       usefulUnitCost: number;
+      yieldWasteCost: number;
       lineCost: number;
     }>;
   }>;
@@ -479,6 +482,7 @@ export interface DishCostResult {
   packagingCost: number;
   materialCost: number;
   wasteCost: number;
+  yieldWasteCost: number;
   baseRecipeLaborCost: number;
   baseRecipeIndirectCost: number;
   variableCost: number;
@@ -495,6 +499,8 @@ export interface DishCostResult {
   utilityTargetAmount: number;
   totalUtilityAmount: number;
   totalUtilityOnCostPercent: number;
+  mbeAmount: number;
+  mbePercent: number;
   suggestedPriceByFoodCost: number;
   suggestedPriceByMargin: number;
   recommendedPrice: number;
@@ -539,7 +545,7 @@ export interface MenuEngineeringItem {
   revenue: number;
   contribution: number;
   popularityIndex: number;
-  quadrant: 'Estrella' | 'Vaca' | 'Puzzle' | 'Perro';
+  quadrant: 'Estrella' | 'Vaca' | 'Enigma' | 'Ajustar';
   recommendedAction: string;
 }
 

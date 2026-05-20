@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createProductionAppState } from '../data/initialState';
 import { createId } from '../lib/id';
-import { calculateUsefulUnitCost } from '../services/costEngine';
+import { calculateDishCost, calculateProjectionRevenue, calculateUsefulUnitCost, getLatestProjection } from '../services/costEngine';
 import { useAuth } from './useAuth';
 import { supabase } from '../services/supabaseClient';
 import type {
@@ -69,6 +69,162 @@ function normalizeSundayMorningOnlyShifts(staffShifts: StaffShift[], laborProfil
         : `${shift.notes} Domingo solo AM.`,
     };
   });
+}
+
+const activeMenuDishNames = new Set([
+  'ceviche mixto',
+  'camarones al pil pil',
+  'ostiones a la parmesana',
+  'caldillo de congrio a la nerudiana',
+  'salmon a la plancha con mix de ensalada',
+  'salmon con mix de ensaladas',
+  'pulpo grillado con pure de camote',
+  'panacota de frutos rojos',
+  'pie de maracuya',
+  'celestino mas helado de vainilla',
+]);
+
+const simulatedMenuUnitMixByDish: Record<string, number> = {
+  'ceviche mixto': 0.15,
+  'camarones al pil pil': 0.15,
+  'ostiones a la parmesana': 0.10,
+  'caldillo de congrio a la nerudiana': 0.17,
+  'salmon a la plancha con mix de ensalada': 0.16,
+  'salmon con mix de ensaladas': 0.16,
+  'pulpo grillado con pure de camote': 0.12,
+  'panacota de frutos rojos': 0.06,
+  'pie de maracuya': 0.05,
+  'celestino mas helado de vainilla': 0.04,
+};
+
+function normalizeDishName(value: string) {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function keepOnlyActiveMenuSales(state: AppState): AppState {
+  const dishes = state.dishes.map((dish) => ({
+    ...dish,
+    name: dish.name.replace(/selectino/gi, 'Celestino'),
+    technicalNotes: dish.technicalNotes.replace(/selectino/gi, 'celestino'),
+  }));
+  const activeDishIds = new Set(
+    dishes
+      .filter((dish) => activeMenuDishNames.has(normalizeDishName(dish.name)))
+      .map((dish) => dish.id),
+  );
+  const sales = state.sales
+    .map((sale) => ({
+      ...sale,
+      items: sale.items.filter((item) => activeDishIds.has(item.dishId)),
+    }))
+    .filter((sale) => sale.items.length > 0);
+
+  return {
+    ...state,
+    dishes,
+    sales,
+  };
+}
+
+function simulateFullMonthSales(state: AppState): AppState {
+  const latestProjection = getLatestProjection(state.projections);
+  const projectedRevenue = latestProjection ? calculateProjectionRevenue(latestProjection) : 0;
+  const dishes = state.dishes.filter((dish) => activeMenuDishNames.has(normalizeDishName(dish.name)));
+  if (projectedRevenue <= 0 || dishes.length === 0) return state;
+
+  const weightedDishes = dishes.map((dish) => {
+    const result = calculateDishCost(state, dish);
+    const unitPrice = dish.customerFacingPrice && dish.customerFacingPrice > 0 ? dish.customerFacingPrice : result.recommendedPrice;
+    const weight = simulatedMenuUnitMixByDish[normalizeDishName(dish.name)] ?? 0.01;
+    return { dish, unitPrice, weight };
+  });
+  const totalWeight = weightedDishes.reduce((sum, item) => sum + item.weight, 0);
+  const averageWeightedTicket = weightedDishes.reduce(
+    (sum, item) => sum + item.unitPrice * (item.weight / Math.max(totalWeight, 1)),
+    0,
+  );
+  const targetUnits = Math.max(Math.round(projectedRevenue / Math.max(averageWeightedTicket, 1)), weightedDishes.length);
+  const simulatedItems = weightedDishes.map((item) => {
+    const unitShare = item.weight / Math.max(totalWeight, 1);
+    return {
+      id: createId('sale-item'),
+      dishId: item.dish.id,
+      quantity: Math.max(Math.round(targetUnits * unitShare), 1),
+      unitPrice: item.unitPrice,
+      discount: 0,
+    };
+  });
+  const adjustedItems = [...simulatedItems];
+  const priorityDishNames = new Set([
+    'caldillo de congrio a la nerudiana',
+    'salmon a la plancha con mix de ensalada',
+    'salmon con mix de ensaladas',
+    'pulpo grillado con pure de camote',
+    'ceviche mixto',
+    'camarones al pil pil',
+  ]);
+  const adjustmentCandidates = adjustedItems
+    .filter((item) => {
+      const dish = state.dishes.find((candidate) => candidate.id === item.dishId);
+      return dish ? priorityDishNames.has(normalizeDishName(dish.name)) : false;
+    })
+    .sort((a, b) => b.unitPrice - a.unitPrice);
+  let simulatedRevenue = adjustedItems.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+  let guard = 0;
+  while (simulatedRevenue < projectedRevenue && adjustmentCandidates.length > 0 && guard < 5000) {
+    const item = adjustmentCandidates[guard % adjustmentCandidates.length];
+    item.quantity += 1;
+    simulatedRevenue += item.unitPrice;
+    guard += 1;
+  }
+
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = today.getMonth();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const dailySales = Array.from({ length: daysInMonth }, (_, index) => ({
+    id: createId('sale'),
+    soldAt: `${year}-${String(month + 1).padStart(2, '0')}-${String(index + 1).padStart(2, '0')}`,
+    channel: 'Salon' as const,
+    items: [] as typeof adjustedItems,
+  }));
+
+  adjustedItems.forEach((item) => {
+    let remaining = item.quantity;
+    for (let dayIndex = 0; dayIndex < daysInMonth; dayIndex += 1) {
+      const daysLeft = daysInMonth - dayIndex;
+      const quantity = dayIndex === daysInMonth - 1 ? remaining : Math.floor(remaining / daysLeft);
+      remaining -= quantity;
+      if (quantity <= 0) continue;
+      dailySales[dayIndex].items.push({
+        ...item,
+        id: createId('sale-item'),
+        quantity,
+      });
+    }
+  });
+
+  const sales = dailySales.filter((sale) => sale.items.length > 0);
+  const unitsByDish = sales
+    .flatMap((sale) => sale.items)
+    .reduce<Record<string, number>>((acc, item) => {
+      acc[item.dishId] = (acc[item.dishId] ?? 0) + item.quantity;
+      return acc;
+    }, {});
+
+  return {
+    ...state,
+    sales,
+    dishes: state.dishes.map((dish) => ({
+      ...dish,
+      salesCount: unitsByDish[dish.id] ?? 0,
+    })),
+  };
 }
 
 function mergeIngredientDefaults(ingredient: Partial<Ingredient>, fallback: Ingredient): Ingredient {
@@ -209,10 +365,12 @@ function mergeState(parsed: Partial<AppState>, businessId?: string): AppState {
     users: parsed.users ?? fallback.users,
   };
 
+  const activeState = simulateFullMonthSales(keepOnlyActiveMenuSales(nextState));
+
   return {
-    ...nextState,
-    ingredients: syncIngredientsWithLatestYieldRecords(nextState.ingredients, nextState.yieldRecords),
-    staffShifts: normalizeSundayMorningOnlyShifts(nextState.staffShifts, nextState.laborProfiles),
+    ...activeState,
+    ingredients: syncIngredientsWithLatestYieldRecords(activeState.ingredients, activeState.yieldRecords),
+    staffShifts: normalizeSundayMorningOnlyShifts(activeState.staffShifts, activeState.laborProfiles),
   };
 }
 
@@ -238,6 +396,321 @@ function convertToSameUnit(quantity: number, from: string, to: string) {
   return ((grams[from] ?? 1) * quantity) / (grams[to] ?? 1);
 }
 
+type RemoteSaleRow = {
+  id: string;
+  sold_at: string;
+  channel: Sale['channel'];
+  sale_items?: Array<{
+    id: string;
+    dish_id: string;
+    quantity: number | string;
+    unit_price: number | string;
+    discount: number | string;
+  }>;
+};
+
+function nullableDate(value: string | undefined) {
+  return value && value.trim() ? value : null;
+}
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function deterministicUuid(value: string) {
+  let hashA = 0x811c9dc5;
+  let hashB = 0x811c9dc5;
+  let hashC = 0x811c9dc5;
+  let hashD = 0x811c9dc5;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    hashA = Math.imul(hashA ^ code, 16777619);
+    hashB = Math.imul(hashB ^ (code + index), 16777619);
+    hashC = Math.imul(hashC ^ (code + index * 17), 16777619);
+    hashD = Math.imul(hashD ^ (code + index * 31), 16777619);
+  }
+
+  const hex = [hashA, hashB, hashC, hashD]
+    .map((part) => (part >>> 0).toString(16).padStart(8, '0'))
+    .join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+function toDbUuid(value: string | undefined) {
+  if (!value) return '';
+  if (uuidPattern.test(value)) return value;
+  const uuidMatch = value.match(/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  return uuidMatch ? uuidMatch[0] : deterministicUuid(value);
+}
+
+function nullableUuid(value: string | undefined) {
+  return value && value.trim() ? toDbUuid(value) : null;
+}
+
+async function syncNormalizedState(client: NonNullable<typeof supabase>, businessId: string, state: AppState) {
+  const categories = state.categories.map((category) => ({
+    id: toDbUuid(category.id),
+    business_id: businessId,
+    type: category.type,
+    name: category.name,
+  }));
+
+  const sanitaryCategories = state.sanitaryCategories.map((category) => ({
+    id: toDbUuid(category.id),
+    business_id: businessId,
+    name: category.name,
+    color_name: category.colorName,
+    color_hex: category.colorHex,
+    storage_type: category.storageType,
+    min_temp: category.minTemp,
+    max_temp: category.maxTemp,
+    risk_level: category.riskLevel,
+    sanitary_condition: category.sanitaryCondition,
+    danger_zone_sensitive: category.dangerZoneSensitive,
+    cross_contamination_group: category.crossContaminationGroup,
+  }));
+
+  const suppliers = state.suppliers.map((supplier) => ({
+    id: toDbUuid(supplier.id),
+    business_id: businessId,
+    name: supplier.name,
+    rut: supplier.rut,
+    contact_name: supplier.contactName,
+    phone: supplier.phone,
+    email: supplier.email,
+    product_category: supplier.productCategory,
+    payment_terms: supplier.paymentTerms,
+    lead_time_days: supplier.leadTimeDays,
+    quality_score: supplier.qualityScore,
+    delivery_score: supplier.deliveryScore,
+    notes: supplier.notes,
+  }));
+
+  const laborProfiles = state.laborProfiles.map((profile) => ({
+    id: toDbUuid(profile.id),
+    business_id: businessId,
+    role_name: profile.roleName,
+    role_group: profile.roleGroup,
+    headcount: profile.headcount,
+    monthly_salary: profile.monthlySalary,
+    monthly_hours: profile.monthlyHours,
+    extra_monthly_cost: profile.extraMonthlyCost,
+  }));
+
+  const ingredients = state.ingredients.map((ingredient) => {
+    const usefulUnitCost = calculateUsefulUnitCost(
+      ingredient.purchasePrice,
+      ingredient.purchaseUnit,
+      ingredient.useUnit,
+      ingredient.usableYieldPercent,
+    );
+
+    return {
+      id: toDbUuid(ingredient.id),
+      business_id: businessId,
+      category_id: nullableUuid(ingredient.categoryId),
+      sanitary_category_id: nullableUuid(ingredient.sanitaryCategoryId),
+      primary_supplier_id: nullableUuid(ingredient.primarySupplierId),
+      name: ingredient.name,
+      purchase_unit: ingredient.purchaseUnit,
+      use_unit: ingredient.useUnit,
+      purchase_price: ingredient.purchasePrice,
+      useful_unit_cost: usefulUnitCost,
+      usable_yield_percent: ingredient.usableYieldPercent,
+      current_stock: ingredient.currentStock,
+      min_stock: ingredient.minStock,
+      max_stock: ingredient.maxStock,
+      last_purchase_date: nullableDate(ingredient.lastPurchaseDate),
+      shelf_life_days: ingredient.shelfLifeDays,
+      storage_type: ingredient.storageType,
+      storage_conditions: ingredient.storageConditions,
+      storage_temperature: ingredient.storageTemperature,
+      recommended_min_temp: ingredient.recommendedMinTemp,
+      recommended_max_temp: ingredient.recommendedMaxTemp,
+      current_storage_temp: ingredient.currentStorageTemp,
+      risk_level: ingredient.riskLevel,
+      color_hex: ingredient.colorHex,
+      color_name: ingredient.colorName,
+      internal_code: ingredient.internalCode,
+      supplier_code: ingredient.supplierCode,
+      storage_location: ingredient.storageLocation,
+      received_date: nullableDate(ingredient.receivedDate),
+      expiry_date: nullableDate(ingredient.expiryDate),
+      lot_code: ingredient.lotCode,
+      responsible: ingredient.responsible,
+    };
+  });
+
+  const priceHistory = state.ingredients.flatMap((ingredient) =>
+    ingredient.priceHistory.map((price) => ({
+      id: deterministicUuid(`price:${ingredient.id}:${price.date}:${price.supplierId || 'supplier'}`),
+      business_id: businessId,
+      ingredient_id: toDbUuid(ingredient.id),
+      supplier_id: nullableUuid(price.supplierId),
+      price_purchase: price.pricePurchase,
+      recorded_at: price.date,
+    })),
+  );
+
+  const yieldRecords = state.yieldRecords.map((record) => ({
+    id: toDbUuid(record.id),
+    business_id: businessId,
+    ingredient_id: toDbUuid(record.ingredientId),
+    recorded_at: record.recordedAt,
+    purchase_weight: record.purchaseWeight,
+    cleaned_weight: record.cleanedWeight,
+    cooked_weight: record.cookedWeight,
+    final_useful_weight: record.finalUsefulWeight,
+    waste_percent: record.wastePercent,
+    yield_percent: record.yieldPercent,
+    waste_type: record.wasteType,
+    trim_loss: record.trimLoss,
+    peel_loss: record.peelLoss,
+    bone_loss: record.boneLoss,
+    fat_loss: record.fatLoss,
+    evaporation_loss: record.evaporationLoss,
+    thaw_loss: record.thawLoss,
+    handling_loss: record.handlingLoss,
+    notes: record.notes,
+  }));
+
+  const recipes = state.baseRecipes.map((recipe) => ({
+    id: toDbUuid(recipe.id),
+    business_id: businessId,
+    category_id: nullableUuid(recipe.categoryId),
+    kind: recipe.kind,
+    name: recipe.name,
+    yield_amount: recipe.yieldAmount,
+    yield_unit: recipe.yieldUnit,
+    item_cost_unit: recipe.itemCostUnit,
+    time_minutes: recipe.timeMinutes,
+    labor_profile_id: nullableUuid(recipe.laborProfileId),
+    labor_minutes: recipe.laborMinutes,
+    instructions: recipe.instructions,
+    quality_notes: recipe.qualityNotes,
+    allergens: recipe.allergens,
+    observations: recipe.observations,
+  }));
+
+  const recipeItems = state.baseRecipes.flatMap((recipe) =>
+    recipe.items.map((item) => ({
+      id: toDbUuid(item.id),
+      business_id: businessId,
+      recipe_id: toDbUuid(recipe.id),
+      ingredient_id: toDbUuid(item.ingredientId),
+      quantity: item.quantity,
+      unit: item.unit,
+      waste_percent: item.wastePercent,
+    })),
+  );
+
+  const packagingCosts = state.packagingCosts.map((packaging) => ({
+    id: toDbUuid(packaging.id),
+    business_id: businessId,
+    name: packaging.name,
+    channel: packaging.channel === 'General' ? null : packaging.channel,
+    unit: packaging.unit,
+    unit_cost: packaging.unitCost,
+  }));
+
+  const dishes = state.dishes.map((dish) => ({
+    id: toDbUuid(dish.id),
+    business_id: businessId,
+    category_id: nullableUuid(dish.categoryId),
+    name: dish.name,
+    service: dish.service,
+    labor_profile_id: nullableUuid(dish.laborProfileId),
+    labor_minutes: dish.laborMinutes,
+    indirect_cost_share: dish.indirectCostShare,
+    target_food_cost: dish.targetFoodCost,
+    desired_margin: dish.desiredMargin,
+    allergens: dish.allergens,
+    plating_notes: dish.platingNotes,
+    quality_checklist: dish.qualityChecklist,
+    technical_notes: dish.technicalNotes,
+    shelf_life_hours: dish.shelfLifeHours,
+    sales_count: dish.salesCount,
+    customer_facing_price: dish.customerFacingPrice ?? null,
+    image_url: dish.imageUrl ?? null,
+  }));
+
+  const dishComponents = state.dishes.flatMap((dish) =>
+    dish.directItems.map((component) => ({
+      id: toDbUuid(component.id),
+      business_id: businessId,
+      dish_id: toDbUuid(dish.id),
+      component_type: component.componentType,
+      ref_id: toDbUuid(component.refId),
+      quantity: component.quantity,
+      unit: component.unit,
+      waste_percent: component.wastePercent,
+    })),
+  );
+
+  const sales = state.sales.map((sale) => ({
+    id: toDbUuid(sale.id),
+    business_id: businessId,
+    sold_at: sale.soldAt,
+    channel: sale.channel,
+  }));
+
+  const saleItems = state.sales.flatMap((sale) =>
+    sale.items.map((item) => ({
+      id: toDbUuid(item.id),
+      business_id: businessId,
+      sale_id: toDbUuid(sale.id),
+      dish_id: toDbUuid(item.dishId),
+      quantity: item.quantity,
+      unit_price: item.unitPrice,
+      discount: item.discount,
+    })),
+  );
+
+  const upsertIfAny = async (table: string, rows: Array<Record<string, unknown>>) => {
+    if (rows.length === 0) return;
+    const { error } = await client.from(table).upsert(rows);
+    if (error) throw error;
+  };
+  const deleteMissingById = async (table: string, ids: string[]) => {
+    const query = client.from(table).delete().eq('business_id', businessId);
+    const { error } = ids.length > 0
+      ? await query.not('id', 'in', `(${ids.join(',')})`)
+      : await query;
+    if (error) throw error;
+  };
+
+  await upsertIfAny('categories', categories);
+  await upsertIfAny('sanitary_categories', sanitaryCategories);
+  await upsertIfAny('suppliers', suppliers);
+  await upsertIfAny('labor_profiles', laborProfiles);
+  await upsertIfAny('ingredients', ingredients);
+  await upsertIfAny('ingredient_price_history', priceHistory);
+  await upsertIfAny('yield_records', yieldRecords);
+  await upsertIfAny('recipes', recipes);
+  await upsertIfAny('recipe_items', recipeItems);
+  await upsertIfAny('packaging_costs', packagingCosts);
+  await upsertIfAny('dishes', dishes);
+  await upsertIfAny('dish_components', dishComponents);
+  await deleteMissingById('sale_items', saleItems.map((item) => String(item.id)));
+  await deleteMissingById('sales', sales.map((sale) => String(sale.id)));
+  await upsertIfAny('sales', sales);
+  await upsertIfAny('sale_items', saleItems);
+}
+
+function mapRemoteSales(rows: RemoteSaleRow[]): Sale[] {
+  return rows.map((row) => ({
+    id: row.id,
+    soldAt: row.sold_at,
+    channel: row.channel,
+    items: (row.sale_items ?? []).map((item) => ({
+      id: item.id,
+      dishId: item.dish_id,
+      quantity: Number(item.quantity),
+      unitPrice: Number(item.unit_price),
+      discount: Number(item.discount),
+    })),
+  }));
+}
+
 export function useLocalStore() {
   const { user, usingSupabase } = useAuth();
   const [state, setState] = useState<AppState>(() => createRemoteFallbackState(user));
@@ -260,11 +733,18 @@ export function useLocalStore() {
       setIsHydrating(true);
       setSyncError(null);
 
-      const { data, error } = await client
+      const [{ data, error }, { data: salesData, error: salesError }] = await Promise.all([
+        client
         .from('app_snapshots')
         .select('state')
         .eq('business_id', businessId)
-        .maybeSingle();
+          .maybeSingle(),
+        client
+          .from('sales')
+          .select('id, sold_at, channel, sale_items(id, dish_id, quantity, unit_price, discount)')
+          .eq('business_id', businessId)
+          .order('sold_at', { ascending: false }),
+      ]);
 
       if (cancelled) return;
 
@@ -273,16 +753,22 @@ export function useLocalStore() {
         setIsHydrating(false);
         return;
       }
+      if (salesError) {
+        setSyncError(salesError.message);
+      }
+
+      const remoteSales = salesData ? mapRemoteSales(salesData as RemoteSaleRow[]) : [];
 
       if (data?.state) {
-        setState(mergeState(data.state as Partial<AppState>, businessId));
+        const snapshotState = data.state as Partial<AppState>;
+        setState(mergeState(snapshotState, businessId));
       } else {
         const emptyState = createProductionAppState({
           businessId,
           businessName: 'Nuevo negocio gastronomico',
           user,
         });
-        setState(emptyState);
+        setState({ ...emptyState, sales: remoteSales });
       }
 
       if (!cancelled) setIsHydrating(false);
@@ -313,7 +799,16 @@ export function useLocalStore() {
         state: remoteState,
       });
 
-      if (error) setSyncError(error.message);
+      if (error) {
+        setSyncError(error.message);
+        return;
+      }
+
+      try {
+        await syncNormalizedState(client, businessId, remoteState);
+      } catch (normalizedError) {
+        setSyncError(normalizedError instanceof Error ? normalizedError.message : 'No se pudo sincronizar tablas normalizadas.');
+      }
     }, 500);
 
     return () => window.clearTimeout(timeout);
