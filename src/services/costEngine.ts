@@ -866,8 +866,8 @@ export function getDashboardMetrics(state: AppState): DashboardMetrics {
     calculateTotalMonthlyLaborCost(state);
   const projectedProfit = monthlyProjection * contributionMarginRatio - totalMonthlyStructure;
   const projectedNetMarginPercent = monthlyProjection === 0 ? 0 : projectedProfit / monthlyProjection;
-  const projectedNetSales = getNetAmountFromGross(monthlyProjection, taxRate);
-  const projectedVatDebit = getVatAmountFromGross(monthlyProjection, taxRate);
+  const projectedNetSales = monthlyProjection - monthlyProjection * taxRate;
+  const projectedVatDebit = monthlyProjection * taxRate;
   const historicalTaxablePurchaseConsumption = getHistoricalTaxablePurchaseConsumption(state);
   const projectedTaxablePurchaseConsumption = salesRevenue === 0
     ? 0
@@ -875,7 +875,7 @@ export function getDashboardMetrics(state: AppState): DashboardMetrics {
   const projectedTaxableStructureGross = state.indirectCosts
     .filter((item) => item.afecto)
     .reduce((sum, item) => sum + getMonthlyCostAmount(item), 0);
-  const projectedVatCredit = getVatAmountFromGross(projectedTaxablePurchaseConsumption + projectedTaxableStructureGross, taxRate);
+  const projectedVatCredit = (projectedTaxablePurchaseConsumption + projectedTaxableStructureGross) * taxRate;
   const projectedVatPayable = projectedVatDebit - projectedVatCredit;
   const projectedRealProfitAfterVat = projectedProfit - projectedVatPayable;
   const projectedRealNetMarginAfterVatPercent = monthlyProjection === 0 ? 0 : projectedRealProfitAfterVat / monthlyProjection;
@@ -932,14 +932,14 @@ export function getMenuEngineering(state: AppState): MenuEngineeringItem[] {
       : !highMbe && highPopularity
         ? 'Vaca'
         : highMbe && !highPopularity
-          ? 'Enigma'
+          ? 'Incognita'
           : 'Ajustar';
     const recommendedAction =
       quadrant === 'Estrella'
         ? 'Mantener posicion, proteger calidad y no tocar gramaje.'
         : quadrant === 'Vaca'
           ? 'Reducir costo oculto o subir precio con cuidado.'
-          : quadrant === 'Enigma'
+          : quadrant === 'Incognita'
             ? 'Reposicionar en carta y reforzar venta consultiva.'
             : 'No vender como esta: subir MBE sobre 75% y reubicar antes de publicar.';
 

@@ -328,7 +328,7 @@ h2 {
 }
 
 .kpi-grid {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
 .kpi-grid.three {
@@ -361,6 +361,8 @@ h2 {
   display: grid;
   gap: 10px;
   min-height: 140px;
+  min-width: 0;
+  overflow: hidden;
   padding: 20px;
   position: relative;
 }
@@ -395,7 +397,18 @@ h2 {
   font-size: clamp(18px, 1.55vw, 22px);
   line-height: 1.1;
   letter-spacing: 0;
-  white-space: nowrap;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: normal;
+}
+
+.kpi strong.long-value {
+  display: -webkit-box;
+  font-size: 18px;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .panel-header {

@@ -301,20 +301,22 @@ function exportMenuEngineeringExcel(state: StoreState) {
   const realMonthRevenue = items.reduce((sum, item) => sum + item.unitsSold * getEngineeringExportPrice(item), 0);
   const totalRevenue = realMonthRevenue;
   const totalFoodCost = items.reduce((sum, item) => sum + item.unitsSold * (item.result.materialCost + item.result.wasteCost), 0);
-  const totalRealCost = items.reduce((sum, item) => sum + item.unitsSold * item.result.totalCost, 0);
   const totalMbe = totalRevenue - totalFoodCost;
-  const totalContributionBeforeStructure = totalRevenue - totalRealCost;
-  const projectedRealProfitAfterVat = metrics.projectedRealProfitAfterVat;
   const totalMonthlyStructure = state.business.fixedCostsMonthly +
     state.indirectCosts.reduce((sum, item) => sum + getMonthlyCostAmount(item), 0) +
     calculateTotalMonthlyLaborCost(state);
-  const projectedProfitBeforeVat = totalContributionBeforeStructure - totalMonthlyStructure;
-  const projectedVatDebit = metrics.projectedVatDebit;
-  const projectedVatCredit = metrics.projectedVatCredit;
-  const projectedVatPayable = metrics.projectedVatPayable;
+  const projectedProfitBeforeVat = totalRevenue - totalFoodCost - totalMonthlyStructure;
+  const taxRate = Math.max(state.business.taxRate, 0);
+  const projectedVatDebit = totalRevenue * taxRate;
+  const cifAfectos = state.indirectCosts
+    .filter((item) => item.afecto)
+    .reduce((sum, item) => sum + getMonthlyCostAmount(item), 0);
+  const projectedVatCredit = (totalFoodCost + cifAfectos) * taxRate;
+  const projectedVatPayable = projectedVatDebit - projectedVatCredit;
+  const totalCostsWithVat = totalFoodCost + totalMonthlyStructure + projectedVatPayable;
+  const projectedRealProfitAfterVat = projectedProfitBeforeVat - projectedVatPayable;
   const currentFoodCostPercent = totalRevenue > 0 ? totalFoodCost / totalRevenue : 0;
   const currentMbePercent = totalRevenue > 0 ? totalMbe / totalRevenue : 0;
-  const currentContributionPercent = totalRevenue > 0 ? totalContributionBeforeStructure / totalRevenue : 0;
   const projectedRealProfitAfterVatPercent = totalRevenue > 0 ? projectedRealProfitAfterVat / totalRevenue : 0;
 
   const detailRows = items.map((item) => {
@@ -336,8 +338,6 @@ function exportMenuEngineeringExcel(state: StoreState) {
         0,
         0,
         0,
-        item.result.totalCost,
-        0,
         0,
         item.quadrant,
       ],
@@ -346,18 +346,18 @@ function exportMenuEngineeringExcel(state: StoreState) {
 
   const worksheetData: Array<Array<string | number>> = [
     [`Ingenieria de Menu - ${exportBusinessName}`, '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
-    ['Venta total corresponde a venta real del mes. La contribucion antes estructura no es utilidad final; utilidad post IVA descuenta estructura e IVA.', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
+    ['Venta total corresponde a venta real del mes. La utilidad post IVA usa la misma formula de la app: venta bruta - food cost - CIF + MO - IVA neto.', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
     [],
-    ['Venta real del mes', 'Food cost total', 'Food cost %', 'MBE total', 'MBE %', 'Unidades vendidas', 'Costo total platos', 'Contribucion antes estructura', 'Contribucion %', 'Utilidad post IVA reporte', 'Utilidad post IVA %'],
-    [totalRevenue, totalFoodCost, currentFoodCostPercent, totalMbe, currentMbePercent, totalUnits, totalRealCost, totalContributionBeforeStructure, currentContributionPercent, projectedRealProfitAfterVat, projectedRealProfitAfterVatPercent],
+    ['Venta real del mes', 'Food cost total', 'Food cost %', 'MBE total', 'MBE %', 'Unidades vendidas', 'CIF + MO', 'IVA debito', 'IVA credito', 'IVA neto a pagar', 'Costos totales + IVA', 'Utilidad real post IVA', 'Utilidad post IVA %'],
+    [totalRevenue, totalFoodCost, currentFoodCostPercent, totalMbe, currentMbePercent, totalUnits, totalMonthlyStructure, projectedVatDebit, projectedVatCredit, projectedVatPayable, totalCostsWithVat, projectedRealProfitAfterVat, projectedRealProfitAfterVatPercent],
     [],
     ['Puente utilidad real', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
-    ['Venta real del mes', 'Costo total platos', 'Contribucion antes estructura', 'Estructura mensual', 'Utilidad antes IVA', 'IVA debito', 'IVA credito', 'IVA neto a pagar', 'Utilidad real post IVA'],
-    [totalRevenue, totalRealCost, totalContributionBeforeStructure, totalMonthlyStructure, projectedProfitBeforeVat, projectedVatDebit, projectedVatCredit, projectedVatPayable, projectedRealProfitAfterVat],
+    ['Venta real del mes', 'Food cost total', 'CIF + MO', 'Utilidad antes IVA', 'IVA debito', 'IVA credito', 'IVA neto a pagar', 'Costos totales + IVA', 'Utilidad real post IVA'],
+    [totalRevenue, totalFoodCost, totalMonthlyStructure, projectedProfitBeforeVat, projectedVatDebit, projectedVatCredit, projectedVatPayable, totalCostsWithVat, projectedRealProfitAfterVat],
     [],
     ['Detalle por plato', '', '', '', '', '', '', '', '', '', '', '', '', ''],
-    ['Receta', 'Categoria', 'U vendidas', '% pop', 'Food cost $', 'Food cost %', 'Precio cliente', 'MBE $', 'MBE %', 'Rendimiento MBE', 'Costo total $', 'Contribucion %', 'Ventas realizadas', 'Clasificacion'],
-    ...(detailRows.length > 0 ? detailRows.map((row) => row.values) : [['Sin platos registrados', 'Sin categoria', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 'Sin datos']]),
+    ['Receta', 'Categoria', 'U vendidas', '% pop', 'Food cost $', 'Food cost %', 'Precio cliente', 'MBE $', 'MBE %', 'Rendimiento MBE', 'Ventas realizadas', 'Clasificacion'],
+    ...(detailRows.length > 0 ? detailRows.map((row) => row.values) : [['Sin platos registrados', 'Sin categoria', 0, 0, 0, 0, 0, 0, 0, 0, 0, 'Sin datos']]),
   ];
 
   const workbook = XLSX.utils.book_new();
@@ -773,7 +773,7 @@ function exportMenuEngineeringExcel(state: StoreState) {
     ['MBE', 'MBE % >= 75%', getMbeStatus(currentMbePercent), 'Si baja de 75%, revisar precio cliente o materia prima.', describeMbeProgress(currentMbePercent)],
     ['Clasificacion Estrella', 'MBE alto y popularidad alta', 'Correcto', 'Mantener posicion y proteger calidad.', 'Alta rentabilidad + alta venta'],
     ['Clasificacion Vaca', 'MBE bajo y popularidad alta', 'Revisar', 'Subir precio o bajar food cost sin perder venta.', 'Alta venta + rentabilidad ajustada'],
-    ['Clasificacion Enigma', 'MBE alto y popularidad baja', 'Revisar', 'Mejorar visibilidad y venta sugerida.', 'Buena rentabilidad + baja venta'],
+    ['Clasificacion Incognita', 'MBE alto y popularidad baja', 'Revisar', 'Mejorar visibilidad y venta sugerida.', 'Buena rentabilidad + baja venta'],
     ['Clasificacion Ajustar', 'MBE bajo y popularidad baja', 'Alerta', 'No impulsar hasta corregir rentabilidad.', 'Baja venta + baja rentabilidad'],
     ['Precio usado', 'Precio cliente actual', 'Correcto', 'Las ventas se valorizan al precio carta actual para alinear dashboard y Excel.', 'Evita diferencias por precios antiguos'],
     ['Ajuste rendimiento', 'Costo util - costo bruto de compra', 'Correcto', 'Es un desglose explicativo. El costo linea final ya incluye este ajuste; no se vuelve a sumar en otra columna.', 'Ej: $9.990/kg, 82% rendimiento, 180 g = $1.798 bruto + $395 ajuste = $2.193 final'],
@@ -817,12 +817,12 @@ function exportMenuEngineeringExcel(state: StoreState) {
 
   setCellStyle(worksheet, 'A1', titleStyle);
   setCellStyle(worksheet, 'A2', subtitleStyle);
-  for (let col = 0; col < 11; col += 1) {
+  for (let col = 0; col < 13; col += 1) {
     setCellStyle(worksheet, XLSX.utils.encode_cell({ r: 3, c: col }), darkHeaderStyle);
-    setCellStyle(worksheet, XLSX.utils.encode_cell({ r: 4, c: col }), col === 2 || col === 4 || col === 8 || col === 10 ? {
+    setCellStyle(worksheet, XLSX.utils.encode_cell({ r: 4, c: col }), col === 2 || col === 4 || col === 12 ? {
       ...kpiValueStyle,
-      font: { bold: true, sz: 13, color: { rgb: (col === 2 ? currentFoodCostPercent <= 0.25 : col === 4 ? currentMbePercent >= 0.75 : col === 8 ? currentContributionPercent > 0 : projectedRealProfitAfterVatPercent > 0) ? '0B7A22' : '8A1C12' } },
-      fill: { fgColor: { rgb: (col === 2 ? currentFoodCostPercent <= 0.25 : col === 4 ? currentMbePercent >= 0.75 : col === 8 ? currentContributionPercent > 0 : projectedRealProfitAfterVatPercent > 0) ? 'DDF3DF' : 'F7D7D2' } },
+      font: { bold: true, sz: 13, color: { rgb: (col === 2 ? currentFoodCostPercent <= 0.25 : col === 4 ? currentMbePercent >= 0.75 : projectedRealProfitAfterVatPercent > 0) ? '0B7A22' : '8A1C12' } },
+      fill: { fgColor: { rgb: (col === 2 ? currentFoodCostPercent <= 0.25 : col === 4 ? currentMbePercent >= 0.75 : projectedRealProfitAfterVatPercent > 0) ? 'DDF3DF' : 'F7D7D2' } },
     } : kpiValueStyle);
   }
   setCellStyle(worksheet, 'A7', sectionStyle);
@@ -830,8 +830,8 @@ function exportMenuEngineeringExcel(state: StoreState) {
   for (let col = 0; col < 9; col += 1) {
     setCellStyle(worksheet, XLSX.utils.encode_cell({ r: 7, c: col }), darkHeaderStyle);
     const valueAddress = XLSX.utils.encode_cell({ r: 8, c: col });
-    const isPositiveResult = col === 2 || col === 4 || col === 8;
-    const isCostOrTax = col === 1 || col === 3 || col === 5 || col === 7;
+    const isPositiveResult = col === 3 || col === 8;
+    const isCostOrTax = col === 1 || col === 2 || col === 4 || col === 6 || col === 7;
     setCellStyle(
       worksheet,
       valueAddress,
@@ -842,7 +842,7 @@ function exportMenuEngineeringExcel(state: StoreState) {
             : kpiValueStyle,
     );
   }
-  for (let col = 0; col < 14; col += 1) {
+  for (let col = 0; col < 12; col += 1) {
     setCellStyle(worksheet, XLSX.utils.encode_cell({ r: headerRow, c: col }), darkHeaderStyle);
   }
 
@@ -853,28 +853,27 @@ function exportMenuEngineeringExcel(state: StoreState) {
     worksheet[`H${excelRow}`] = { t: 'n', f: `G${excelRow}-E${excelRow}`, z: '$#,##0' };
     worksheet[`I${excelRow}`] = { t: 'n', f: `IF(G${excelRow}=0,0,H${excelRow}/G${excelRow})`, z: '0.0%' };
     worksheet[`J${excelRow}`] = { t: 'n', f: `C${excelRow}*H${excelRow}`, z: '$#,##0' };
-    worksheet[`L${excelRow}`] = { t: 'n', f: `IF(G${excelRow}=0,0,(G${excelRow}-K${excelRow})/G${excelRow})`, z: '0.0%' };
-    worksheet[`M${excelRow}`] = { t: 'n', f: `C${excelRow}*G${excelRow}`, z: '$#,##0' };
+    worksheet[`K${excelRow}`] = { t: 'n', f: `C${excelRow}*G${excelRow}`, z: '$#,##0' };
   });
 
-  ['A5', 'B5', 'D5', 'G5', 'H5', 'J5'].forEach((cellAddress) => {
+  ['A5', 'B5', 'D5', 'G5', 'H5', 'I5', 'J5', 'K5', 'L5'].forEach((cellAddress) => {
     if (worksheet[cellAddress]) worksheet[cellAddress].z = '$#,##0';
   });
-  ['C5', 'E5', 'I5', 'K5'].forEach((cellAddress) => {
+  ['C5', 'E5', 'M5'].forEach((cellAddress) => {
     if (worksheet[cellAddress]) worksheet[cellAddress].z = '0.0%';
   });
   ['A9', 'B9', 'C9', 'D9', 'E9', 'F9', 'G9', 'H9', 'I9'].forEach((cellAddress) => {
     if (worksheet[cellAddress]) worksheet[cellAddress].z = '$#,##0';
   });
   for (let row = firstDataRow + 1; row <= lastDataRow + 1; row += 1) {
-    for (let col = 0; col < 14; col += 1) {
+    for (let col = 0; col < 12; col += 1) {
       setCellStyle(worksheet, XLSX.utils.encode_cell({ r: row - 1, c: col }), tableCellStyle);
     }
-    ['D', 'F', 'I', 'L'].forEach((column) => {
+    ['D', 'F', 'I'].forEach((column) => {
       const cell = worksheet[`${column}${row}`];
       if (cell) cell.z = '0.0%';
     });
-    ['E', 'G', 'H', 'J', 'K', 'M'].forEach((column) => {
+    ['E', 'G', 'H', 'J', 'K'].forEach((column) => {
       const cell = worksheet[`${column}${row}`];
       if (cell) cell.z = '$#,##0';
     });
@@ -882,10 +881,8 @@ function exportMenuEngineeringExcel(state: StoreState) {
     setCellStyle(worksheet, `F${row}`, foodCostPercent > 0.25 ? percentDangerStyle : percentOkStyle);
     const mbePercent = ((detailRows[row - firstDataRow - 1]?.finalPrice ?? 0) - (detailRows[row - firstDataRow - 1]?.foodCost ?? 0)) / Math.max(detailRows[row - firstDataRow - 1]?.finalPrice ?? 0, 1);
     setCellStyle(worksheet, `I${row}`, mbePercent < 0.75 ? percentDangerStyle : percentOkStyle);
-    const realMarginPercent = ((detailRows[row - firstDataRow - 1]?.finalPrice ?? 0) - (items[row - firstDataRow - 1]?.result.totalCost ?? 0)) / Math.max(detailRows[row - firstDataRow - 1]?.finalPrice ?? 0, 1);
-    setCellStyle(worksheet, `L${row}`, realMarginPercent < 0 ? percentDangerStyle : percentOkStyle);
-    const classValue = String(worksheet[`N${row}`]?.v ?? '');
-    setCellStyle(worksheet, `N${row}`, classValue === 'Estrella' ? classOkStyle : classValue === 'Ajustar' ? classDangerStyle : classWarnStyle);
+    const classValue = String(worksheet[`L${row}`]?.v ?? '');
+    setCellStyle(worksheet, `L${row}`, classValue === 'Estrella' ? classOkStyle : classValue === 'Ajustar' ? classDangerStyle : classWarnStyle);
   }
 
   const utilityNoteRow = lastDataRow + 4;
@@ -896,7 +893,7 @@ function exportMenuEngineeringExcel(state: StoreState) {
   setSheetValue(
     worksheet,
     `A${utilityNoteRow}`,
-    'Utilidad real = contribucion antes estructura - estructura mensual - IVA neto. La contribucion antes estructura no es utilidad final.',
+    'Utilidad real post IVA = venta bruta - food cost - CIF + MO - IVA neto.',
     chartExplanationStyle,
   );
 
@@ -1414,8 +1411,8 @@ export function MarketingModule({ state }: { state: StoreState }) {
     <section className="content-stack">
       <div className="kpi-grid">
         <KpiCard title="Demanda mensual estimada" value={`${analysis.demandBase} platos`} icon={TrendingUp} />
-        <KpiCard title="Plato con mayor tiraje esperado" value={analysis.topPopularity ? analysis.topPopularity.dish.name : 'Sin datos'} icon={Target} />
-        <KpiCard title="Plato con mayor bruto esperado" value={analysis.topHero ? analysis.topHero.dish.name : 'Sin datos'} icon={Wallet} />
+        <KpiCard title="Plato con mayor popularidad" value={analysis.topPopularity ? analysis.topPopularity.dish.name : 'Sin datos'} icon={Target} />
+        <KpiCard title="Plato con mayor venta esperada" value={analysis.topHero ? analysis.topHero.dish.name : 'Sin datos'} icon={Wallet} />
         <KpiCard title="Mayor margen bruto esperado" value={analysis.topMargin ? `${analysis.topMargin.dish.name} · ${percent.format(analysis.topMargin.grossMarginPercentOnCurrentPrice)}` : 'Sin datos'} icon={BarChart3} />
       </div>
 
@@ -1560,7 +1557,12 @@ export function DishComparisonModule({ state }: { state: StoreState }) {
     const lowestTotalCost = [...selectedResults].sort((a, b) => a.result.totalCost - b.result.totalCost)[0];
     const highestMargin = [...selectedResults].sort((a, b) => b.customerMarginPercent - a.customerMarginPercent)[0];
     const highestFoodCost = [...selectedResults].sort((a, b) => b.result.foodCostPercent - a.result.foodCostPercent)[0];
-    return { lowestTotalCost, highestMargin, highestFoodCost };
+    const highestMbe = [...selectedResults].sort((a, b) => {
+      const bMbe = b.customerPrice - (b.result.materialCost + b.result.wasteCost);
+      const aMbe = a.customerPrice - (a.result.materialCost + a.result.wasteCost);
+      return bMbe - aMbe;
+    })[0];
+    return { lowestTotalCost, highestMargin, highestFoodCost, highestMbe };
   }, [selectedResults]);
 
   const comparisonSections = useMemo(() => ([
@@ -1576,8 +1578,20 @@ export function DishComparisonModule({ state }: { state: StoreState }) {
           render: (item: typeof selectedResults[number]) => money.format(roundPriceForCustomer(item.result.recommendedPrice)),
         },
         {
-          label: 'Food cost sobre precio actual',
+          label: 'MBE $',
+          render: (item: typeof selectedResults[number]) => money.format(item.customerPrice - (item.result.materialCost + item.result.wasteCost)),
+        },
+        {
+          label: 'MBE %',
+          render: (item: typeof selectedResults[number]) => percent.format(item.customerPrice > 0 ? (item.customerPrice - (item.result.materialCost + item.result.wasteCost)) / item.customerPrice : 0),
+        },
+        {
+          label: 'Food cost %',
           render: (item: typeof selectedResults[number]) => percent.format(item.customerPrice > 0 ? item.result.directCost / item.customerPrice : 0),
+        },
+        {
+          label: 'Food cost $',
+          render: (item: typeof selectedResults[number]) => money.format(item.result.directCost),
         },
         {
           label: 'Margen real de ganancia',
@@ -1594,39 +1608,44 @@ export function DishComparisonModule({ state }: { state: StoreState }) {
       ],
     },
     {
-      title: 'Costo directo del plato',
+      title: 'Food cost del plato',
       rows: [
         {
-          label: 'Materia prima directa',
-          render: (item: typeof selectedResults[number]) => money.format(item.result.materialCost),
+          label: 'MP directa plato final',
+          render: (item: typeof selectedResults[number]) => money.format(
+            item.result.componentLines
+              .filter((line) => line.componentType === 'ingredient')
+              .reduce((sum, line) => sum + line.lineCost, 0),
+          ),
         },
         {
-          label: 'Merma por rendimiento',
-          render: (item: typeof selectedResults[number]) => money.format(item.result.yieldWasteCost),
+          label: 'MP dentro de recetas base',
+          render: (item: typeof selectedResults[number]) => {
+            const directIngredientCost = item.result.componentLines
+              .filter((line) => line.componentType === 'ingredient')
+              .reduce((sum, line) => sum + line.lineCost, 0);
+            return money.format(Math.max(item.result.materialCost - directIngredientCost, 0));
+          },
         },
         {
-          label: 'Packaging',
-          render: (item: typeof selectedResults[number]) => money.format(item.result.packagingCost),
+          label: 'Food cost total',
+          render: (item: typeof selectedResults[number]) => money.format(item.result.materialCost + item.result.wasteCost),
         },
         {
-          label: 'Costo directo total',
-          render: (item: typeof selectedResults[number]) => money.format(item.result.directCost),
+          label: 'Food cost %',
+          render: (item: typeof selectedResults[number]) => percent.format(item.customerPrice > 0 ? (item.result.materialCost + item.result.wasteCost) / item.customerPrice : 0),
         },
       ],
     },
     {
-      title: 'Produccion y recetas base',
+      title: 'MO, CIF y otros costos',
       rows: [
         {
-          label: 'Costo total recetas base',
-          render: (item: typeof selectedResults[number]) => money.format(item.result.baseRecipeCost),
-        },
-        {
-          label: 'MO embebida en recetas base',
+          label: 'MO en recetas base',
           render: (item: typeof selectedResults[number]) => money.format(item.result.baseRecipeLaborCost),
         },
         {
-          label: 'Indirectos embebidos en recetas base',
+          label: 'CIF en recetas base',
           render: (item: typeof selectedResults[number]) => money.format(item.result.baseRecipeIndirectCost),
         },
         {
@@ -1634,8 +1653,17 @@ export function DishComparisonModule({ state }: { state: StoreState }) {
           render: (item: typeof selectedResults[number]) => money.format(item.result.laborCost),
         },
         {
-          label: 'Costo de produccion',
-          render: (item: typeof selectedResults[number]) => money.format(item.result.productionCost),
+          label: 'Packaging',
+          render: (item: typeof selectedResults[number]) => money.format(item.result.packagingCost),
+        },
+        {
+          label: 'Subtotal MO + CIF + packaging',
+          render: (item: typeof selectedResults[number]) => money.format(
+            item.result.baseRecipeLaborCost +
+            item.result.baseRecipeIndirectCost +
+            item.result.laborCost +
+            item.result.packagingCost,
+          ),
         },
       ],
     },
@@ -1715,10 +1743,10 @@ export function DishComparisonModule({ state }: { state: StoreState }) {
 
       {summary && (
         <div className="summary-strip compact">
-          <SummaryMetric label="Platos comparados" value={String(selectedResults.length)} />
           <SummaryMetric label="Menor costo total" value={`${summary.lowestTotalCost.dish.name} · ${money.format(summary.lowestTotalCost.result.totalCost)}`} />
           <SummaryMetric label="Mayor margen real" value={`${summary.highestMargin.dish.name} · ${percent.format(summary.highestMargin.customerMarginPercent)}`} />
           <SummaryMetric label="Food cost mas alto" value={`${summary.highestFoodCost.dish.name} · ${percent.format(summary.highestFoodCost.result.foodCostPercent)}`} />
+          <SummaryMetric label="MBE mas alto" value={`${summary.highestMbe.dish.name} · ${money.format(summary.highestMbe.customerPrice - (summary.highestMbe.result.materialCost + summary.highestMbe.result.wasteCost))}`} />
         </div>
       )}
 
@@ -1893,7 +1921,7 @@ export function ReportsModule({ state }: { state: StoreState }) {
     { label: 'Margen de contribucion medio', value: money.format(report.contributionMargin), helper: 'Aporte promedio por unidad vendida antes de cubrir estructura fija.' },
     { label: 'Platos-equivalentes para equilibrio', value: report.breakEvenUnits > 0 ? `${report.breakEvenUnits} platos` : 'Sin base', helper: `Equivalen a platos vendidos con aporte medio de ${money.format(report.contributionMargin)} por unidad.` },
     { label: 'Tickets promedio para equilibrio', value: report.breakEvenGuestTickets > 0 ? `${report.breakEvenGuestTickets} tickets` : 'Sin base', helper: `Calculados con ticket promedio proyectado de ${money.format(report.projectedAverageFoodTicket)}.` },
-    { label: 'Estructura mensual total', value: money.format(report.totalMonthlyStructure), helper: 'Incluye fijos base, indirectos mensualizados y costo total del personal.' },
+    { label: 'CIF + MO', value: money.format(report.totalMonthlyStructure), helper: 'Incluye fijos base, indirectos mensualizados y costo total del personal.' },
     { label: 'Utilidad proyectada antes IVA', value: money.format(report.projectedProfit), helper: 'Resultado operativo preliminar con ventas y costos brutos.' },
     { label: 'IVA debito proyectado', value: money.format(report.projectedVatDebit), helper: 'IVA generado por las ventas proyectadas, asumiendo tickets con IVA incluido.' },
     { label: 'IVA credito proyectado', value: money.format(report.projectedVatCredit), helper: 'IVA recuperable estimado desde compras e insumos afectos al periodo.' },
@@ -1901,7 +1929,7 @@ export function ReportsModule({ state }: { state: StoreState }) {
     { label: 'Utilidad proyectada despues de IVA', value: money.format(report.projectedRealProfitAfterVat), helper: 'Resultado final estimado del negocio despues de compensar IVA debito y credito.' },
   ];
   const currentMonthNotes = [
-    { label: 'Costos totales + IVA', helper: `${money.format(currentMonthFoodCost)} food cost + ${money.format(currentMonthNonFoodCosts)} costos totales + ${money.format(currentMonthVatPayable)} IVA neto = ${money.format(currentMonthAllCostsWithVat)}.` },
+    { label: 'Costos totales + IVA', helper: `${money.format(currentMonthFoodCost)} food cost + ${money.format(currentMonthNonFoodCosts)} CIF + MO + ${money.format(currentMonthVatPayable)} IVA neto = ${money.format(currentMonthAllCostsWithVat)}.` },
     { label: 'IVA neto a pagar', helper: `${money.format(currentMonthVatDebit)} IVA debito - ${money.format(currentMonthVatCredit)} IVA credito = ${money.format(currentMonthVatPayable)}.` },
     { label: 'Utilidad real post IVA', helper: `${money.format(currentMonthGrossSales)} venta bruta - ${money.format(currentMonthAllCostsWithVat)} costos totales + IVA = ${money.format(currentMonthProfitAfterVat)}.` },
     { label: 'Margen real post IVA', helper: `${money.format(currentMonthProfitAfterVat)} utilidad real post IVA / ${money.format(currentMonthGrossSales)} venta bruta = ${percent.format(currentMonthRealMarginPercent)}.` },
@@ -1956,7 +1984,7 @@ export function ReportsModule({ state }: { state: StoreState }) {
             <SummaryMetric label="Precio promedio plato" value={money.format(currentMonthAverageDishPrice)} />
             <SummaryMetric label="Food cost $" value={money.format(currentMonthFoodCost)} />
             <SummaryMetric label="Food cost %" value={percent.format(currentMonthFoodCostPercent)} />
-            <SummaryMetric label="Costos totales" value={money.format(currentMonthNonFoodCosts)} />
+            <SummaryMetric label="CIF + MO" value={money.format(currentMonthNonFoodCosts)} />
             <SummaryMetric label="IVA debito" value={money.format(currentMonthVatDebit)} />
             <SummaryMetric label="IVA credito" value={money.format(currentMonthVatCredit)} />
             <SummaryMetric label="IVA neto a pagar" value={money.format(currentMonthVatPayable)} />
@@ -2255,11 +2283,12 @@ export function ReportsModule({ state }: { state: StoreState }) {
 }
 
 function KpiCard({ title, value, icon: Icon }: { title: string; value: string; icon: typeof Store }) {
+  const isLongValue = value.length > 24;
   return (
     <section className="kpi">
       <div className="kpi-icon"><Icon size={18} /></div>
       <span>{title}</span>
-      <strong>{value}</strong>
+      <strong className={isLongValue ? 'long-value' : undefined} title={isLongValue ? value : undefined}>{value}</strong>
     </section>
   );
 }

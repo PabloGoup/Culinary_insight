@@ -546,7 +546,7 @@ export interface MenuEngineeringItem {
   revenue: number;
   contribution: number;
   popularityIndex: number;
-  quadrant: 'Estrella' | 'Vaca' | 'Enigma' | 'Ajustar';
+  quadrant: 'Estrella' | 'Vaca' | 'Incognita' | 'Ajustar';
   recommendedAction: string;
 }
 

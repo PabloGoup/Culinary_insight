@@ -132,16 +132,16 @@ La hoja `Ingenieria de Menu` usa:
 - `rendimiento`: cifra de negocio - costos totales.
 - `clas mbe`: alto/bajo margen.
 - `Cla I P`: alta/baja popularidad.
-- `Cla Final`: Enigma, Estrella, Perro.
+- `Cla Final`: Incognita, Estrella, Perro.
 
 Equivalencia recomendada en la app:
 
 - Estrella = alto margen + alta venta.
 - Vaca = bajo margen + alta venta.
-- Puzzle/Enigma = alto margen + baja venta.
+- Puzzle/Incognita = alto margen + baja venta.
 - Perro = bajo margen + baja venta.
 
-Nota profesional: el Excel usa `Enigma`; el requerimiento de la app usa `Puzzle`. La app debe soportar ambos terminos o mapear `Enigma` a `Puzzle`.
+Nota profesional: el Excel usa `Incognita`; el requerimiento de la app usa `Puzzle`. La app debe soportar ambos terminos o mapear `Incognita` a `Puzzle`.
 
 ## 5. Encuesta/preferencia
 
@@ -312,7 +312,7 @@ Prioridad alta:
 4. Agregar modo CIF porcentual y modo prorrateo real.
 5. Agregar proyeccion por dia/servicio/ticket promedio.
 6. Mapear `Encuesta` como popularidad inicial.
-7. Ajustar ingenieria de menu para soportar `Estrella`, `Vaca`, `Puzzle/Enigma`, `Perro`.
+7. Ajustar ingenieria de menu para soportar `Estrella`, `Vaca`, `Puzzle/Incognita`, `Perro`.
 
 Prioridad media:
 
