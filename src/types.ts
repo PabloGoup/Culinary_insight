@@ -267,6 +267,7 @@ export interface IndirectCost {
   amount: number;
   allocationMethod: AllocationMethod;
   allocationValue: number;
+  afecto: boolean;
 }
 
 export interface PurchaseItem {

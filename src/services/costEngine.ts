@@ -872,7 +872,9 @@ export function getDashboardMetrics(state: AppState): DashboardMetrics {
   const projectedTaxablePurchaseConsumption = salesRevenue === 0
     ? 0
     : monthlyProjection * (historicalTaxablePurchaseConsumption / salesRevenue);
-  const projectedTaxableStructureGross = state.business.fixedCostsMonthly + indirectMonthly;
+  const projectedTaxableStructureGross = state.indirectCosts
+    .filter((item) => item.afecto)
+    .reduce((sum, item) => sum + getMonthlyCostAmount(item), 0);
   const projectedVatCredit = getVatAmountFromGross(projectedTaxablePurchaseConsumption + projectedTaxableStructureGross, taxRate);
   const projectedVatPayable = projectedVatDebit - projectedVatCredit;
   const projectedRealProfitAfterVat = projectedProfit - projectedVatPayable;

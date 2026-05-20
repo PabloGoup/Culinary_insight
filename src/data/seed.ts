@@ -485,10 +485,10 @@ export const demoState: AppState = {
     { id: 'fc-event', scopeType: 'service', scopeId: 'Evento', targetPercent: 0.3 },
   ],
   indirectCosts: [
-    { id: 'ic-luz', name: 'Electricidad', category: 'Servicios', period: 'mensual', amount: 980000, allocationMethod: 'hours', allocationValue: 1 },
-    { id: 'ic-arriendo', name: 'Arriendo', category: 'Fijos', period: 'mensual', amount: 3800000, allocationMethod: 'sales', allocationValue: 1 },
-    { id: 'ic-admin', name: 'Sueldos administrativos', category: 'Administracion', period: 'mensual', amount: 2900000, allocationMethod: 'manual', allocationValue: 0.18 },
-    { id: 'ic-software', name: 'Software y PMS', category: 'Tecnologia', period: 'mensual', amount: 320000, allocationMethod: 'product', allocationValue: 1 },
+    { id: 'ic-luz', name: 'Electricidad', category: 'Servicios', period: 'mensual', amount: 980000, allocationMethod: 'hours', allocationValue: 1, afecto: true },
+    { id: 'ic-arriendo', name: 'Arriendo', category: 'Fijos', period: 'mensual', amount: 3800000, allocationMethod: 'sales', allocationValue: 1, afecto: false },
+    { id: 'ic-admin', name: 'Sueldos administrativos', category: 'Administracion', period: 'mensual', amount: 2900000, allocationMethod: 'manual', allocationValue: 0.18, afecto: false },
+    { id: 'ic-software', name: 'Software y PMS', category: 'Tecnologia', period: 'mensual', amount: 320000, allocationMethod: 'product', allocationValue: 1, afecto: true },
   ],
   packagingCosts: [
     { id: 'pack-delivery', name: 'Caja delivery premium', channel: 'Delivery', unit: 'unidad', unitCost: 420 },

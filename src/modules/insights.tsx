@@ -1833,7 +1833,13 @@ export function ReportsModule({ state }: { state: StoreState }) {
   const taxRate = Math.max(state.business.taxRate, 0);
   const currentMonthNetSales = taxRate > 0 ? currentMonthGrossSales / (1 + taxRate) : currentMonthGrossSales;
   const currentMonthVatDebit = currentMonthGrossSales - currentMonthNetSales;
-  const currentMonthVatCredit = taxRate > 0 ? inventoryPlanning.usedThisMonthValue - inventoryPlanning.usedThisMonthValue / (1 + taxRate) : 0;
+  const currentMonthCifAfectosGross = state.indirectCosts
+    .filter((cost) => cost.afecto)
+    .reduce((sum, cost) => sum + getMonthlyCostAmount(cost), 0);
+  const currentMonthCifAfectosVat = taxRate > 0 ? currentMonthCifAfectosGross - currentMonthCifAfectosGross / (1 + taxRate) : 0;
+  const currentMonthVatCredit = taxRate > 0
+    ? (inventoryPlanning.usedThisMonthValue - inventoryPlanning.usedThisMonthValue / (1 + taxRate)) + currentMonthCifAfectosVat
+    : 0;
   const currentMonthVatPayable = currentMonthVatDebit - currentMonthVatCredit;
   const currentMonthMbe = currentMonthGrossSales - currentMonthFoodCost;
   const currentMonthProfitBeforeVat = currentMonthGrossSales - currentMonthFoodCost - currentMonthNonFoodCosts;

@@ -776,6 +776,7 @@ function emptyIndirectCost(): IndirectCost {
     amount: 0,
     allocationMethod: 'manual',
     allocationValue: 1,
+    afecto: true,
   };
 }
 
@@ -5209,6 +5210,15 @@ function ExpensesModule({
               </select>
             </label>
             <label>Factor de reparto<input type="number" step="0.01" value={draft.allocationValue} onChange={(event) => setDraft({ ...draft, allocationValue: parseNumericInput(event.target.value, 1) })} /></label>
+            <label className="checkbox-container" style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', marginTop: '24px' }}>
+              <input
+                type="checkbox"
+                className="audit-checkbox"
+                checked={draft.afecto}
+                onChange={(event) => setDraft({ ...draft, afecto: event.target.checked })}
+              />
+              Gasto afecto a IVA
+            </label>
           </div>
           <div className="toolbar">
             <button
@@ -5247,7 +5257,7 @@ function ExpensesModule({
 
       <DataTable
         title="Gastos indirectos imputables al costo final"
-        headers={['Nombre', 'Categoria', 'Periodo', 'Monto origen', 'Mensualizado', 'Metodo', 'Factor', '']}
+        headers={['Nombre', 'Categoria', 'Periodo', 'Monto origen', 'Afecto', 'Mensualizado', 'Metodo', 'Factor', '']}
         rows={state.indirectCosts.map((item) => {
           const isEditing = editingCostId === item.id;
           return [
@@ -5261,6 +5271,17 @@ function ExpensesModule({
               </select>
             ) : item.period,
             isEditing ? <input key={`${item.id}-amount`} type="number" step="0.001" value={draft.amount} onChange={(event) => setDraft({ ...draft, amount: parseNumericInput(event.target.value) })} /> : money.format(item.amount),
+            isEditing ? (
+              <input
+                key={`${item.id}-afecto`}
+                type="checkbox"
+                className="audit-checkbox"
+                checked={draft.afecto}
+                onChange={(event) => setDraft({ ...draft, afecto: event.target.checked })}
+              />
+            ) : (
+              item.afecto ? 'Sí' : 'No'
+            ),
             money.format(getMonthlyCostAmount(isEditing ? draft : item)),
             isEditing ? (
               <select key={`${item.id}-method`} value={draft.allocationMethod} onChange={(event) => setDraft({ ...draft, allocationMethod: event.target.value as IndirectCost['allocationMethod'] })}>
@@ -5771,12 +5792,13 @@ function DetailedCostsSheet({
 
       <DataTable
         title="Grilla de gastos indirectos"
-        headers={['Nombre', 'Categoria', 'Periodo', 'Monto origen', 'Mensualizado', 'Metodo', 'Factor']}
+        headers={['Nombre', 'Categoria', 'Periodo', 'Monto origen', 'Afecto', 'Mensualizado', 'Metodo', 'Factor']}
         rows={state.indirectCosts.map((item) => [
           item.name,
           item.category,
           item.period,
           money.format(item.amount),
+          item.afecto ? 'Sí' : 'No',
           money.format(getMonthlyCostAmount(item)),
           item.allocationMethod,
           decimal.format(item.allocationValue),
@@ -6045,7 +6067,7 @@ function SettingsModule({
 
       <DataTable
         title="Gastos indirectos"
-        headers={['Nombre', 'Categoria', 'Periodo', 'Monto', 'Mensualizado', 'Metodo', 'Factor', '']}
+        headers={['Nombre', 'Categoria', 'Periodo', 'Monto', 'Afecto', 'Mensualizado', 'Metodo', 'Factor', '']}
         rows={[
           ...state.indirectCosts.map((item) => {
             const isEditing = editingCostId === item.id;
@@ -6061,6 +6083,17 @@ function SettingsModule({
                 </select>
               ) : item.period,
               isEditing ? <input key={`${item.id}-amount`} type="number" step="0.001" value={indirectDraft.amount} onChange={(event) => setIndirectDraft({ ...indirectDraft, amount: parseNumericInput(event.target.value) })} /> : money.format(item.amount),
+              isEditing ? (
+                <input
+                  key={`${item.id}-afecto`}
+                  type="checkbox"
+                  className="audit-checkbox"
+                  checked={indirectDraft.afecto}
+                  onChange={(event) => setIndirectDraft({ ...indirectDraft, afecto: event.target.checked })}
+                />
+              ) : (
+                item.afecto ? 'Sí' : 'No'
+              ),
               money.format(getMonthlyCostAmount(effectiveCost)),
               isEditing ? (
                 <select key={`${item.id}-method`} value={indirectDraft.allocationMethod} onChange={(event) => setIndirectDraft({ ...indirectDraft, allocationMethod: event.target.value as IndirectCost['allocationMethod'] })}>
@@ -6115,6 +6148,14 @@ function SettingsModule({
               <option value="mensual">Mensual</option>
             </select>,
             <input key="new-cost-amount" type="number" step="0.001" value={editingCostId ? 0 : indirectDraft.amount} onChange={(event) => !editingCostId && setIndirectDraft({ ...indirectDraft, amount: parseNumericInput(event.target.value) })} disabled={Boolean(editingCostId)} />,
+            <input
+              key="new-cost-afecto"
+              type="checkbox"
+              className="audit-checkbox"
+              checked={editingCostId ? false : indirectDraft.afecto}
+              onChange={(event) => !editingCostId && setIndirectDraft({ ...indirectDraft, afecto: event.target.checked })}
+              disabled={Boolean(editingCostId)}
+            />,
             money.format(getMonthlyCostAmount(indirectDraft)),
             <select key="new-cost-method" value={editingCostId ? 'manual' : indirectDraft.allocationMethod} onChange={(event) => !editingCostId && setIndirectDraft({ ...indirectDraft, allocationMethod: event.target.value as IndirectCost['allocationMethod'] })} disabled={Boolean(editingCostId)}>
               <option value="manual">Manual</option>

@@ -350,7 +350,10 @@ function mergeState(parsed: Partial<AppState>, businessId?: string): AppState {
     baseRecipes: parsed.baseRecipes ?? fallback.baseRecipes,
     dishes: parsed.dishes ?? fallback.dishes,
     foodCostTargets: parsed.foodCostTargets ?? fallback.foodCostTargets,
-    indirectCosts: parsed.indirectCosts ?? fallback.indirectCosts,
+    indirectCosts: (parsed.indirectCosts ?? fallback.indirectCosts).map((item) => ({
+      ...item,
+      afecto: item.afecto !== undefined ? item.afecto : true,
+    })),
     packagingCosts: parsed.packagingCosts ?? fallback.packagingCosts,
     purchases: parsed.purchases ?? fallback.purchases,
     inventoryMovements: parsed.inventoryMovements ?? fallback.inventoryMovements,
