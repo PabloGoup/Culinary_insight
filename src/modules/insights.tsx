@@ -1831,8 +1831,8 @@ export function ReportsModule({ state }: { state: StoreState }) {
   const currentMonthNonFoodCosts = report.totalMonthlyStructure;
   const currentMonthGrossSales = inventoryPlanning.currentMonthSalesValue;
   const taxRate = Math.max(state.business.taxRate, 0);
-  const currentMonthNetSales = taxRate > 0 ? currentMonthGrossSales / (1 + taxRate) : currentMonthGrossSales;
-  const currentMonthVatDebit = currentMonthGrossSales - currentMonthNetSales;
+  const currentMonthVatDebit = currentMonthGrossSales * taxRate;
+  const currentMonthNetSales = currentMonthGrossSales - currentMonthVatDebit;
   const currentMonthCifAfectosGross = state.indirectCosts
     .filter((cost) => cost.afecto)
     .reduce((sum, cost) => sum + getMonthlyCostAmount(cost), 0);
